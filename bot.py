@@ -25,9 +25,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Telegram bot configuration
-API_ID = os.environ.get('API_ID', '26494161')
-API_HASH = os.environ.get('API_HASH', '55da841f877d16a3a806169f3c5153d3')
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '7758524025:AAEVf_OePVQ-6hhM1GfvRlqX3QZIqDOivtw')
+API_ID = os.environ.get('API_ID', '12345678')
+API_HASH = os.environ.get('API_HASH', 'abcdef1234567890abcdef1234567890')
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZ')
 DOWNLOAD_DIR = 'downloads'
 TEMP_DIR = 'temp'
 
@@ -69,7 +69,7 @@ async def download_with_aria2p(url, filename):
             "out": filename,
             "file-allocation": "falloc"  # Faster allocation
         }
-        download = aria2.add_urid(url, options=options)
+        download = aria2.add_uri([url], options=options)  # Fixed: add_uri, not add_urid
         while not download.is_complete:
             await asyncio.sleep(1)  # Async wait for completion
         file_path = os.path.join(DOWNLOAD_DIR, filename)
@@ -164,21 +164,18 @@ async def handle_links(client: Client, message: Message):
         
         # Download file in background thread
         def download_task():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
             try:
-                file_path, success = loop.run_until_complete(download_with_aria2p(download_link, file_name))
+                # Run async download in thread-safe way
+                future = asyncio.run_coroutine_threadsafe(download_with_aria2p(download_link, file_name), bot.loop)
+                file_path, success = future.result()
                 if not success:
-                    loop.run_until_complete(msg.edit_text(f"❌ Download failed for {file_name}"))
+                    asyncio.run_coroutine_threadsafe(msg.edit_text(f"❌ Download failed for {file_name}"), bot.loop).result()
                     return
                 
-                loop.run_until_complete(send_video(message, file_path, file_name))
+                asyncio.run_coroutine_threadsafe(send_video(message, file_path, file_name), bot.loop).result()
             except Exception as e:
                 logger.error(f'Download error: {str(e)}')
-                loop.run_until_complete(msg.edit_text(f"❌ Download error: {str(e)}"))
-            finally:
-                loop.close()
+                asyncio.run_coroutine_threadsafe(msg.edit_text(f"❌ Download error: {str(e)}"), bot.loop).result()
         
         threading.Thread(target=download_task).start()
         
@@ -220,13 +217,16 @@ async def progress_callback(current, total, msg: Message, file_name: str):
     """Update progress message during upload"""
     percent = current * 100 / total
     progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
+    new_text = (
+        f" Uploading: {file_name}\n"
+        f"{progress_bar}\n"
+        f" {human_readable_size(current)} / {human_readable_size(total)}"
+        f" ({percent:.1f}%)"
+    )
     try:
-        await msg.edit_text(
-            f" Uploading: {file_name}\n"
-            f"{progress_bar}\n"
-            f" {human_readable_size(current)} / {human_readable_size(total)}"
-            f" ({percent:.1f}%)"
-        )
+        # Skip if text hasn't changed (avoids MESSAGE_NOT_MODIFIED)
+        if msg.text != new_text:
+            await msg.edit_text(new_text)
     except:
         pass
 
