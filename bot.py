@@ -164,7 +164,7 @@ async def handle_links(client: Client, message: Message):
                 }
                 download = aria2.add_uris([download_link], options=options)
                 
-                # Wait for download to complete without progress updates
+                # Wait for download to complete
                 while not download.is_complete:
                     asyncio.run_coroutine_threadsafe(asyncio.sleep(1), bot.loop).result()
                 
@@ -209,4 +209,11 @@ async def send_video(message: Message, file_path: str, file_name: str):
             logger.error(f"File cleanup error: {str(e)}")
 
 def run_flask():
-    app.run(host='0.0.0.0', port=PORT
+    app.run(host='0.0.0.0', port=PORT, threaded=True)
+
+if __name__ == '__main__':
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    logger.info("Starting Telegram bot...")
+    bot.run()
