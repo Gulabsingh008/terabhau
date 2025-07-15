@@ -41,10 +41,21 @@ bot = Client(
     workers=16
 )
 
+loop = asyncio.get_event_loop()
+
 def parse_size(size_str):
     units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
     size, unit = re.match(r'([\d.]+)\s*([A-Za-z]+)', size_str).groups()
     return float(size) * units[unit.upper()]
+
+def download_with_aria(url, filename):
+    cmd = [
+        'aria2c', '-x', '32', '-s', '32', '-k', '2M', '-j', '32',
+        '-d', DOWNLOAD_DIR, '-o', filename,
+        '--file-allocation=falloc', '--summary-interval=0', '--console-log-level=warn', url
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return os.path.join(DOWNLOAD_DIR, filename), result.returncode == 0
 
 def get_zozo_data(url):
     try:
@@ -82,7 +93,7 @@ async def start_command(client: Client, message: Message):
         "- Supports videos up to 2GB\n"
         "- Fast downloads using multi-connection\n"
         "- Direct streaming option\n\n"
-        "Created by Zozo ️ ji"
+        "Created by Zozo ️"
     )
     await message.reply_text(help_text)
 
@@ -106,54 +117,27 @@ async def handle_links(client: Client, message: Message):
             await msg.edit_text(f"❌ File too large ({data['size']}). Max supported size is 2GB.")
             return
 
-        await msg.edit_text(f"⬇️ Downloading: {file_name}\nSize: {data['size']}\n⬢⬡⬡⬡⬡⬡⬡⬡⬡⬡")
+        async def update_download_progress():
+            for i in range(1, 21):
+                progress_bar = "⬢" * i + "⬡" * (20 - i)
+                await msg.edit_text(f"⬇️ Downloading: {file_name}\n{progress_bar}")
+                await asyncio.sleep(1.5)
+
+        asyncio.create_task(update_download_progress())
 
         def download_task():
             try:
-                proc = subprocess.Popen([
-                    'aria2c', '-x', '32', '-s', '32', '-k', '2M', '-j', '32',
-                    '-d', DOWNLOAD_DIR, '-o', file_name,
-                    '--file-allocation=falloc', '--summary-interval=1', '--console-log-level=warn', download_link
-                ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-
-                while True:
-                    line = proc.stdout.readline()
-                    if not line:
-                        break
-                    match = re.search(r'\((\d+)%\)', line)
-                    if match:
-                        percent = int(match.group(1))
-                        progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
-                        asyncio.run_coroutine_threadsafe(
-                            msg.edit_text(f"⬇️ Downloading: {file_name}\n{progress_bar} {percent}%"),
-                            bot.loop
-                        )
-
-                proc.wait()
-                if proc.returncode != 0:
-                    asyncio.run_coroutine_threadsafe(
-                        msg.edit_text(f"❌ Download failed for {file_name}"),
-                        bot.loop
-                    )
+                file_path, success = download_with_aria(download_link, file_name)
+                if not success:
+                    loop.call_soon_threadsafe(asyncio.create_task, msg.edit_text(f"❌ Download failed for {file_name}"))
                     return
 
-                file_path = os.path.join(DOWNLOAD_DIR, file_name)
-                asyncio.run_coroutine_threadsafe(
-                    msg.edit_text(f"✅ Download complete. Uploading: {file_name}\n⏳ Please wait..."),
-                    bot.loop
-                )
-
-                asyncio.run_coroutine_threadsafe(
-                    send_video(message, file_path, file_name, msg),
-                    bot.loop
-                )
+                loop.call_soon_threadsafe(asyncio.create_task, msg.edit_text(f"✅ Download complete. Uploading: {file_name}\n⏳ Please wait..."))
+                loop.call_soon_threadsafe(asyncio.create_task, send_video(message, file_path, file_name, msg))
 
             except Exception as e:
                 logger.error(f'Download error: {str(e)}')
-                asyncio.run_coroutine_threadsafe(
-                    msg.edit_text(f"❌ Download error: {str(e)}"),
-                    bot.loop
-                )
+                loop.call_soon_threadsafe(asyncio.create_task, msg.edit_text(f"❌ Download error: {str(e)}"))
 
         threading.Thread(target=download_task).start()
 
