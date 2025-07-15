@@ -44,7 +44,7 @@ bot = Client(
     workers=8  # Increased for concurrency
 )
 
-# Initialize aria2p (connects to aria2c daemon started in start.sh)
+# Initialize aria2p (connects to aria2c daemon)
 aria2 = aria2p.API(
     aria2p.Client(
         host="http://localhost",
@@ -57,26 +57,6 @@ def parse_size(size_str):
     units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
     size, unit = re.match(r'([\d.]+)\s*([A-Za-z]+)', size_str).groups()
     return float(size) * units[unit.upper()]
-
-async def download_with_aria2p(url, filename):
-    """Download file using aria2p with high-speed settings"""
-    try:
-        options = {
-            "max-connection-per-server": "32",  # High connections for speed
-            "split": "32",  # Parallel segments
-            "min-split-size": "2M",  # Larger segments
-            "dir": DOWNLOAD_DIR,
-            "out": filename,
-            "file-allocation": "falloc"  # Faster allocation
-        }
-        download = aria2.add_uri([url], options=options)  # Correct method call
-        while not download.is_complete and not download.has_failed:
-            await asyncio.sleep(1)  # Async wait for completion
-        file_path = os.path.join(DOWNLOAD_DIR, filename)
-        return file_path, download.is_complete
-    except Exception as e:
-        logger.error(f"Download error: {str(e)}")
-        return None, False
 
 def get_zozo_data(url):
     """Fetch video metadata from Zozo API"""
@@ -157,41 +137,72 @@ async def handle_links(client: Client, message: Message):
         
         # Prepare download
         await msg.edit_text(
-            f" Downloading: {file_name}\n"
-            f" Size: {data['size']}\n"
-            f"⏳ This may take a while for large files..."
+            f"📥 Downloading: {file_name}\n"
+            f"📏 Size: {data['size']}\n"
+            "⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜\n"
+            "0.0% (0.00 MB / 0.00 MB)"
         )
         
         # Download file in background thread
         def download_task():
             try:
-                # Run async download in thread-safe way
-                future = asyncio.run_coroutine_threadsafe(download_with_aria2p(download_link, file_name), bot.loop)
-                file_path, success = future.result()
-                if not success:
-                    asyncio.run_coroutine_threadsafe(async_edit_msg(msg, f"❌ Download failed for {file_name}"), bot.loop).result()
-                    return
+                # Start download with aria2p
+                options = {
+                    "max-connection-per-server": "32",  # High connections for speed
+                    "split": "32",  # Parallel segments
+                    "min-split-size": "2M",  # Larger segments
+                    "dir": DOWNLOAD_DIR,
+                    "out": file_name,
+                    "file-allocation": "falloc"  # Faster allocation
+                }
+                download = aria2.add_uri([download_link], options=options)
                 
+                # Update download progress
+                last_progress = 0
+                while not download.is_complete:
+                    # Get progress
+                    progress = download.progress
+                    if progress == last_progress:
+                        continue
+                    last_progress = progress
+                    
+                    # Create progress bar
+                    progress_bar = "🟩" * int(progress / 5) + "⬜" * (20 - int(progress / 5))
+                    downloaded = human_readable_size(download.completed_length)
+                    total = human_readable_size(download.total_length)
+                    
+                    # Update message
+                    text = (
+                        f"📥 Downloading: {file_name}\n"
+                        f"📏 Size: {data['size']}\n"
+                        f"{progress_bar}\n"
+                        f"{progress:.1f}% ({downloaded} / {total})"
+                    )
+                    asyncio.run_coroutine_threadsafe(msg.edit_text(text), bot.loop).result()
+                    
+                    # Sleep to avoid spamming
+                    asyncio.run_coroutine_threadsafe(asyncio.sleep(1), bot.loop).result()
+                
+                # Download complete
+                file_path = os.path.join(DOWNLOAD_DIR, file_name)
                 asyncio.run_coroutine_threadsafe(send_video(message, file_path, file_name), bot.loop).result()
+                
             except Exception as e:
                 logger.error(f'Download error: {str(e)}')
-                asyncio.run_coroutine_threadsafe(async_edit_msg(msg, f"❌ Download error: {str(e)}"), bot.loop).result()
+                asyncio.run_coroutine_threadsafe(msg.edit_text(f"❌ Download error: {str(e)}"), bot.loop).result()
         
-        threading.Thread(target=download_task).start()
+        threading.Thread(target=download_task, daemon=True).start()
         
     except Exception as e:
         logger.error(f'Processing error: {str(e)}')
         await msg.edit_text(f"❌ Error: {str(e)}")
 
-async def async_edit_msg(msg: Message, text: str):
-    """Async wrapper for editing message"""
-    await msg.edit_text(text)
-
 async def send_video(message: Message, file_path: str, file_name: str):
     """Send video to user with progress updates"""
     msg = await message.reply_text(
-        f" Uploading: {file_name}\n"
-        "⏳ Please wait..."
+        f"📤 Uploading: {file_name}\n"
+        "⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜\n"
+        "0.0% (0.00 MB / 0.00 MB)"
     )
     
     try:
@@ -201,7 +212,9 @@ async def send_video(message: Message, file_path: str, file_name: str):
             caption=f"✅ {file_name}\n\nPowered by @{bot.me.username}",
             supports_streaming=True,
             progress=progress_callback,
-            progress_args=(msg, file_name)
+            progress_args=(msg, file_name),
+            chunk_size=2 * 1024 * 1024,  # 2MB chunks for faster upload
+            workers=8  # Parallel threads for speed
         )
         await msg.delete()
     except FilePartMissing as e:
@@ -218,17 +231,16 @@ async def send_video(message: Message, file_path: str, file_name: str):
 async def progress_callback(current, total, msg: Message, file_name: str):
     """Update progress message during upload"""
     percent = current * 100 / total
-    progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
-    new_text = (
-        f" Uploading: {file_name}\n"
-        f"{progress_bar}\n"
-        f" {human_readable_size(current)} / {human_readable_size(total)}"
-        f" ({percent:.1f}%)"
-    )
+    progress_bar = "🟩" * int(percent / 5) + "⬜" * (20 - int(percent / 5))
+    downloaded = human_readable_size(current)
+    total_size = human_readable_size(total)
+    
     try:
-        # Skip if text hasn't changed (avoids MESSAGE_NOT_MODIFIED)
-        if msg.text != new_text:
-            await msg.edit_text(new_text)
+        await msg.edit_text(
+            f"📤 Uploading: {file_name}\n"
+            f"{progress_bar}\n"
+            f"{percent:.1f}% ({downloaded} / {total_size})"
+        )
     except:
         pass
 
