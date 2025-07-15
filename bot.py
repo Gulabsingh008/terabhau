@@ -146,7 +146,7 @@ async def handle_links(client: Client, message: Message):
         # Download file in background thread
         def download_task():
             try:
-                # Start download with aria2p - FIXED: use add_uris (plural)
+                # Start download with aria2p - FIXED: use add_uris method
                 options = {
                     "max-connection-per-server": "32",  # 32 connections
                     "split": "32",  # 32 parallel segments
@@ -283,10 +283,10 @@ def run_flask():
     app.run(host='0.0.0.0', port=PORT, threaded=True)
 
 if __name__ == '__main__':
+    # Start Flask server in background thread
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
     # Start Telegram bot
     logger.info("Starting Telegram bot...")
     bot.run()
-    # Start Flask server
