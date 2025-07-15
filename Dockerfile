@@ -1,12 +1,12 @@
 FROM python:3.9-slim
 
-# Install system dependencies
+# Install system dependencies (multi-line RUN with proper escaping)
 RUN apt-get update && apt-get install -y \
     aria2 \
     ffmpeg \
     iproute2 \
     procps \
-    sysvinit-utils \  # For sysctl support
+    sysvinit-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Apply TCP buffer tuning
@@ -20,18 +20,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code (including start.sh)
+# Copy application code
 COPY . .
 
-# Create required directories with permissions
-RUN mkdir -p downloads temp && \
-    chmod 777 downloads temp
-
-# Make start.sh executable
-RUN chmod +x start.sh
+# Create required directories
+RUN mkdir -p downloads temp
 
 # Expose port
 EXPOSE 8080
 
-# Start via custom shell script (starts aria2c, applies ulimit/sysctl, runs bot)
-CMD ["./start.sh"]
+# Start via custom shell script (so we can apply ulimit)
+CMD ["bash", "start.sh"]
