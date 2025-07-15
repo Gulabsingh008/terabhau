@@ -148,15 +148,14 @@ async def handle_links(client: Client, message: Message):
         await msg.edit_text(
             f"📥 Downloading: {file_name}\n"
             f"📏 Size: {data['size']}\n"
-            "⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜\n"
-            "0.0% (0.00 MB / 0.00 MB)"
+            "⏳ This may take a while for large files..."
         )
         
         def download_task():
             try:
                 # Use integer values for numerical options
                 options = {
-                    "max-connection-per-server": 32,  # Integer, not string
+                    "max-connection-per-server": 32,
                     "split": 32,
                     "min-split-size": "2M",
                     "dir": DOWNLOAD_DIR,
@@ -165,29 +164,10 @@ async def handle_links(client: Client, message: Message):
                 }
                 download = aria2.add_uris([download_link], options=options)
                 
-                last_progress = 0
+                # Wait for download to complete without progress updates
                 while not download.is_complete:
-                    progress = download.progress
-                    if progress == last_progress:
-                        asyncio.run_coroutine_threadsafe(asyncio.sleep(1), bot.loop).result()
-                        continue
-                    last_progress = progress
-                    
-                    progress_bar = "🟩" * int(progress / 5) + "⬜" * (20 - int(progress / 5))
-                    downloaded = human_readable_size(download.completed_length)
-                    total = human_readable_size(download.total_length)
-                    
-                    text = (
-                        f"📥 Downloading: {file_name}\n"
-                        f"📏 Size: {data['size']}\n"
-                        f"{progress_bar}\n"
-                        f"{progress:.1f}% ({downloaded} / {total})"
-                    )
-                    asyncio.run_coroutine_threadsafe(
-                        async_edit_msg(msg, text), 
-                        bot.loop
-                    ).result()
-                    
+                    asyncio.run_coroutine_threadsafe(asyncio.sleep(1), bot.loop).result()
+                
                 file_path = os.path.join(DOWNLOAD_DIR, file_name)
                 asyncio.run_coroutine_threadsafe(
                     send_video(message, file_path, file_name), 
@@ -197,7 +177,7 @@ async def handle_links(client: Client, message: Message):
             except Exception as e:
                 logger.error(f'Download error: {str(e)}')
                 asyncio.run_coroutine_threadsafe(
-                    async_edit_msg(msg, f"❌ Download error: {str(e)}"), 
+                    msg.edit_text(f"❌ Download error: {str(e)}"), 
                     bot.loop
                 ).result()
         
@@ -207,34 +187,20 @@ async def handle_links(client: Client, message: Message):
         logger.error(f'Processing error: {str(e)}')
         await msg.edit_text(f"❌ Error: {str(e)}")
 
-async def async_edit_msg(msg: Message, text: str):
-    try:
-        await msg.edit_text(text)
-    except Exception as e:
-        logger.error(f"Error editing message: {str(e)}")
-
 async def send_video(message: Message, file_path: str, file_name: str):
     try:
-        upload_msg = await message.reply_text(
-            f"📤 Uploading: {file_name}\n"
-            "⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜\n"
-            "0.0% (0.00 MB / 0.00 MB)"
-        )
-        
+        # Send video without progress updates
         await message.reply_video(
             video=file_path,
             caption=f"✅ {file_name}\n\nPowered by @{bot.me.username}",
             supports_streaming=True,
-            progress=progress_callback,
-            progress_args=(upload_msg, file_name),
             chunk_size=2 * 1024 * 1024,
             workers=8
         )
-        await upload_msg.delete()
     except FilePartMissing as e:
-        await upload_msg.edit_text(f"❌ Upload failed: {str(e)}")
+        await message.reply_text(f"❌ Upload failed: {str(e)}")
     except Exception as e:
-        await upload_msg.edit_text(f"❌ Upload error: {str(e)}")
+        await message.reply_text(f"❌ Upload error: {str(e)}")
     finally:
         try:
             if os.path.exists(file_path):
@@ -242,40 +208,5 @@ async def send_video(message: Message, file_path: str, file_name: str):
         except Exception as e:
             logger.error(f"File cleanup error: {str(e)}")
 
-async def progress_callback(current, total, msg: Message, file_name: str):
-    try:
-        percent = current * 100 / total
-        progress_bar = "🟩" * int(percent / 5) + "⬜" * (20 - int(percent / 5))
-        downloaded = human_readable_size(current)
-        total_size = human_readable_size(total)
-        
-        if int(percent) != int(progress_callback.last_percent.get(file_name, -1)):
-            progress_callback.last_percent[file_name] = int(percent)
-            await msg.edit_text(
-                f"📤 Uploading: {file_name}\n"
-                f"{progress_bar}\n"
-                f"{percent:.1f}% ({downloaded} / {total_size})"
-            )
-    except Exception as e:
-        logger.error(f"Progress update error: {str(e)}")
-
-# Initialize last percent tracker
-progress_callback.last_percent = {}
-
-def human_readable_size(size):
-    units = ['B', 'KB', 'MB', 'GB', 'TB']
-    index = 0
-    while size >= 1024 and index < len(units) - 1:
-        size /= 1024
-        index += 1
-    return f"{size:.2f} {units[index]}"
-
 def run_flask():
-    app.run(host='0.0.0.0', port=PORT, threaded=True)
-
-if __name__ == '__main__':
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    
-    logger.info("Starting Telegram bot...")
-    bot.run()
+    app.run(host='0.0.0.0', port=PORT
