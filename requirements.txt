@@ -1,0 +1,5 @@
+pyrogram>=2.0.0
+requests
+Flask
+ffmpeg-python
+aria2p
