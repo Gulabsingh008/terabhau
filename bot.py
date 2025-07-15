@@ -69,7 +69,7 @@ async def download_with_aria2p(url, filename):
             "out": filename,
             "file-allocation": "falloc"  # Faster allocation
         }
-        download = aria2.add_uri([url], options=options)  # Fixed: add_uri with URL as list
+        download = aria2.add_uri([url], options=options)  # Correct method call
         while not download.is_complete and not download.has_failed:
             await asyncio.sleep(1)  # Async wait for completion
         file_path = os.path.join(DOWNLOAD_DIR, filename)
@@ -201,9 +201,7 @@ async def send_video(message: Message, file_path: str, file_name: str):
             caption=f"✅ {file_name}\n\nPowered by @{bot.me.username}",
             supports_streaming=True,
             progress=progress_callback,
-            progress_args=(msg, file_name),
-            chunk_size=2 * 1024 * 1024,  # 2MB chunks for faster upload
-            workers=8  # Parallel threads for speed
+            progress_args=(msg, file_name)
         )
         await msg.delete()
     except FilePartMissing as e:
@@ -248,7 +246,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=PORT, threaded=True)
 
 if __name__ == '__main__':
-    # Start Flask server in separate thread
+    # Start Flask server in background thread
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
