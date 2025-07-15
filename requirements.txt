@@ -1,5 +1,6 @@
-pyrogram>=2.0.0
-requests
-Flask
-ffmpeg-python
-aria2p
+pyrogram>=2.0.0  # For Telegram bot with chunk_size and workers support
+requests  # For API calls
+Flask  # For web server
+ffmpeg-python  # For video streaming
+aria2p  # For high-speed multi-connection downloads
+tgcrypto  # Optional: Speeds up Pyrogram encryption/decryption
