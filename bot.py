@@ -10,7 +10,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FilePartMissing
 from urllib.parse import unquote
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 
 # Initialize Flask app
 app = Flask(__name__)
