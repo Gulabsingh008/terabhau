@@ -40,7 +40,7 @@ bot = Client(
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
     workers=16,
-    in_memory=True  # Reduced memory usage
+    in_memory=True
 )
 
 def parse_size(size_str):
@@ -56,11 +56,11 @@ def download_with_aria(url, filename):
             'aria2c',
             '--summary-interval=0',
             '--console-log-level=warn',
-            '-x', '16',  # Optimal for most connections
+            '-x', '16',
             '-s', '16',
             '-j', '16',
             '-k', '1M',
-            '--file-allocation=prealloc',  # Better for large files
+            '--file-allocation=prealloc',
             '-d', DOWNLOAD_DIR,
             '-o', filename,
             url
@@ -70,7 +70,7 @@ def download_with_aria(url, filename):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=3600  # 1 hour timeout
+            timeout=3600
         )
         file_path = os.path.join(DOWNLOAD_DIR, filename)
         return file_path, result.returncode == 0
@@ -213,15 +213,13 @@ async def send_video(message: Message, file_path: str, file_name: str):
             "0.0% (0.00 MB / 0.00 MB)"
         )
         
-        # Send video with progress tracking
+        # Send video with progress tracking (removed unsupported parameters)
         await message.reply_video(
             video=file_path,
             caption=f"✅ {file_name}\n\nPowered by @{bot.me.username}",
             supports_streaming=True,
             progress=progress_callback,
-            progress_args=(progress_msg, file_name),
-            chunk_size=5 * 1024 * 1024,  # 5MB chunks
-            workers=4  # Parallel upload threads
+            progress_args=(progress_msg, file_name)
         )
         
         # Update status to complete
