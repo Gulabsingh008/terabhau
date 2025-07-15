@@ -25,9 +25,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Telegram bot configuration
-API_ID = os.environ.get('API_ID', '12345678')
-API_HASH = os.environ.get('API_HASH', 'abcdef1234567890abcdef1234567890')
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+API_ID = os.environ.get('API_ID', '26494161')
+API_HASH = os.environ.get('API_HASH', '55da841f877d16a3a806169f3c5153d3')
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '7758524025:AAEVf_OePVQ-6hhM1GfvRlqX3QZIqDOivtw')
 DOWNLOAD_DIR = 'downloads'
 TEMP_DIR = 'temp'
 
