@@ -91,7 +91,7 @@ async def start_command(client: Client, message: Message):
         "- Supports videos up to 2GB\n"
         "- Fast downloads using multi-connection\n"
         "- Direct streaming option\n\n"
-        "Created by Zozo ️"
+        "Created by Zozo rrr ️"
     )
     await message.reply_text(help_text)
 
