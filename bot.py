@@ -5,8 +5,9 @@ import requests
 import logging
 import threading
 import asyncio
-import aria2p  # For high-speed downloads
-import ffmpeg  # For streaming
+import aria2p
+import ffmpeg
+import subprocess
 from flask import Flask, Response, jsonify
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -35,25 +36,41 @@ TEMP_DIR = 'temp'
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
+# Start aria2c daemon before initializing Pyrogram
+try:
+    subprocess.Popen([
+        "aria2c",
+        "--enable-rpc",
+        "--rpc-listen-all=true",
+        "--rpc-allow-origin-all",
+        "--rpc-listen-port=6800",
+        "--daemon=true",
+        "--file-allocation=falloc"
+    ])
+    logger.info("Started aria2c daemon")
+except Exception as e:
+    logger.error(f"Failed to start aria2c: {str(e)}")
+
 # Initialize Pyrogram client
 bot = Client(
     'terabox_bot',
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=8  # Increased for concurrency
+    workers=8
 )
 
-# Initialize aria2p (connects to aria2c daemon)
+# Initialize aria2p
 aria2 = aria2p.API(
     aria2p.Client(
         host="http://localhost",
-        port=6800
+        port=6800,
+        timeout=10
     )
 )
 
 def parse_size(size_str):
-    """Convert size string (like '171.07 MB') to bytes"""
+    """Convert size string to bytes"""
     units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
     size, unit = re.match(r'([\d.]+)\s*([A-Za-z]+)', size_str).groups()
     return float(size) * units[unit.upper()]
@@ -62,7 +79,7 @@ def get_zozo_data(url):
     """Fetch video metadata from Zozo API"""
     try:
         api_url = f'https://zozo-api.onrender.com/download?url={url}'
-        response = requests.get(api_url, timeout=30)  # Increased timeout
+        response = requests.get(api_url, timeout=30)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -71,7 +88,6 @@ def get_zozo_data(url):
 
 @app.route('/')
 def home():
-    """Health check endpoint"""
     return jsonify({
         'status': 'active',
         'service': 'Terabox Telegram Bot',
@@ -80,7 +96,6 @@ def home():
 
 @app.route('/stream/<path:url>')
 def stream_video(url):
-    """Video streaming endpoint using ffmpeg-python"""
     url = unquote(url)
     try:
         process = (
@@ -96,7 +111,6 @@ def stream_video(url):
 
 @bot.on_message(filters.command(['start', 'help']))
 async def start_command(client: Client, message: Message):
-    """Handle /start and /help commands"""
     help_text = (
         " **Terabox Video Downloader Bot** \n\n"
         "Send me a Terabox share link and I'll download the video for you!\n\n"
@@ -110,11 +124,9 @@ async def start_command(client: Client, message: Message):
 
 @bot.on_message(filters.regex(r'https?://[^\s]+'))
 async def handle_links(client: Client, message: Message):
-    """Process Terabox links"""
     url = message.text.strip()
     msg = await message.reply_text(" Fetching video info from Zozo API...")
     
-    # Get video metadata
     data = get_zozo_data(url)
     if not data:
         await msg.edit_text("❌ Failed to fetch video info. Please try again later.")
@@ -124,9 +136,7 @@ async def handle_links(client: Client, message: Message):
         file_name = data['name']
         size_bytes = parse_size(data['size'])
         download_link = data['download_link']
-        stream_link = data['stream_link']
         
-        # Check file size
         MAX_SIZE = 2 * 1024**3  # 2GB
         if size_bytes > MAX_SIZE:
             await msg.edit_text(
@@ -135,7 +145,6 @@ async def handle_links(client: Client, message: Message):
             )
             return
         
-        # Prepare download
         await msg.edit_text(
             f"📥 Downloading: {file_name}\n"
             f"📏 Size: {data['size']}\n"
@@ -143,36 +152,31 @@ async def handle_links(client: Client, message: Message):
             "0.0% (0.00 MB / 0.00 MB)"
         )
         
-        # Download file in background thread
         def download_task():
             try:
-                # Start download with aria2p - FIXED: use add_uris method
+                # Use integer values for numerical options
                 options = {
-                    "max-connection-per-server": "32",  # 32 connections
-                    "split": "32",  # 32 parallel segments
-                    "min-split-size": "2M",  # 2MB segments
+                    "max-connection-per-server": 32,  # Integer, not string
+                    "split": 32,
+                    "min-split-size": "2M",
                     "dir": DOWNLOAD_DIR,
                     "out": file_name,
-                    "file-allocation": "falloc"  # Faster allocation
+                    "file-allocation": "falloc"
                 }
-                download = aria2.add_uris([download_link], options=options)  # FIXED: add_uris
+                download = aria2.add_uris([download_link], options=options)
                 
-                # Update download progress
                 last_progress = 0
                 while not download.is_complete:
-                    # Get progress
                     progress = download.progress
                     if progress == last_progress:
                         asyncio.run_coroutine_threadsafe(asyncio.sleep(1), bot.loop).result()
                         continue
                     last_progress = progress
                     
-                    # Create progress bar
                     progress_bar = "🟩" * int(progress / 5) + "⬜" * (20 - int(progress / 5))
                     downloaded = human_readable_size(download.completed_length)
                     total = human_readable_size(download.total_length)
                     
-                    # Update message
                     text = (
                         f"📥 Downloading: {file_name}\n"
                         f"📏 Size: {data['size']}\n"
@@ -184,10 +188,6 @@ async def handle_links(client: Client, message: Message):
                         bot.loop
                     ).result()
                     
-                    # Sleep to avoid spamming
-                    asyncio.run_coroutine_threadsafe(asyncio.sleep(1), bot.loop).result()
-                
-                # Download complete
                 file_path = os.path.join(DOWNLOAD_DIR, file_name)
                 asyncio.run_coroutine_threadsafe(
                     send_video(message, file_path, file_name), 
@@ -207,7 +207,6 @@ async def handle_links(client: Client, message: Message):
         logger.error(f'Processing error: {str(e)}')
         await msg.edit_text(f"❌ Error: {str(e)}")
 
-# Helper function to safely edit messages from threads
 async def async_edit_msg(msg: Message, text: str):
     try:
         await msg.edit_text(text)
@@ -215,32 +214,28 @@ async def async_edit_msg(msg: Message, text: str):
         logger.error(f"Error editing message: {str(e)}")
 
 async def send_video(message: Message, file_path: str, file_name: str):
-    """Send video to user with progress updates"""
     try:
-        # Create upload message
-        msg = await message.reply_text(
+        upload_msg = await message.reply_text(
             f"📤 Uploading: {file_name}\n"
             "⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜\n"
             "0.0% (0.00 MB / 0.00 MB)"
         )
         
-        # Send video with progress
         await message.reply_video(
             video=file_path,
             caption=f"✅ {file_name}\n\nPowered by @{bot.me.username}",
             supports_streaming=True,
             progress=progress_callback,
-            progress_args=(msg, file_name),
-            chunk_size=2 * 1024 * 1024,  # 2MB chunks for faster upload
-            workers=8  # Parallel threads for speed
+            progress_args=(upload_msg, file_name),
+            chunk_size=2 * 1024 * 1024,
+            workers=8
         )
-        await msg.delete()
+        await upload_msg.delete()
     except FilePartMissing as e:
-        await msg.edit_text(f"❌ Upload failed: {str(e)}")
+        await upload_msg.edit_text(f"❌ Upload failed: {str(e)}")
     except Exception as e:
-        await msg.edit_text(f"❌ Upload error: {str(e)}")
+        await upload_msg.edit_text(f"❌ Upload error: {str(e)}")
     finally:
-        # Cleanup downloaded file
         try:
             if os.path.exists(file_path):
                 os.remove(file_path)
@@ -248,14 +243,12 @@ async def send_video(message: Message, file_path: str, file_name: str):
             logger.error(f"File cleanup error: {str(e)}")
 
 async def progress_callback(current, total, msg: Message, file_name: str):
-    """Update progress message during upload"""
     try:
         percent = current * 100 / total
         progress_bar = "🟩" * int(percent / 5) + "⬜" * (20 - int(percent / 5))
         downloaded = human_readable_size(current)
         total_size = human_readable_size(total)
         
-        # Only update if progress has changed
         if int(percent) != int(progress_callback.last_percent.get(file_name, -1)):
             progress_callback.last_percent[file_name] = int(percent)
             await msg.edit_text(
@@ -270,7 +263,6 @@ async def progress_callback(current, total, msg: Message, file_name: str):
 progress_callback.last_percent = {}
 
 def human_readable_size(size):
-    """Convert bytes to human-readable format"""
     units = ['B', 'KB', 'MB', 'GB', 'TB']
     index = 0
     while size >= 1024 and index < len(units) - 1:
@@ -279,14 +271,11 @@ def human_readable_size(size):
     return f"{size:.2f} {units[index]}"
 
 def run_flask():
-    """Run Flask server in separate thread"""
     app.run(host='0.0.0.0', port=PORT, threaded=True)
 
 if __name__ == '__main__':
-    # Start Flask server in background thread
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
-    # Start Telegram bot
     logger.info("Starting Telegram bot...")
     bot.run()
