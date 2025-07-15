@@ -1,33 +1,28 @@
 FROM python:3.9-slim
 
-# Install system dependencies (multi-line RUN with proper escaping)
+# System dependencies install karein
 RUN apt-get update && apt-get install -y \
     aria2 \
     ffmpeg \
     iproute2 \
     procps \
-    sysvinit-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Apply TCP buffer tuning
-RUN echo "net.core.rmem_max=4194304" >> /etc/sysctl.conf && \
-    echo "net.core.wmem_max=4194304" >> /etc/sysctl.conf
-
-# Set working directory
+# Working directory set karein
 WORKDIR /app
 
-# Copy requirements and install
+# Requirements copy karein aur install karein
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# App code copy karein
 COPY . .
 
-# Create required directories
+# Required directories create karein
 RUN mkdir -p downloads temp
 
-# Expose port
+# Port expose karein
 EXPOSE 8080
 
-# Start via custom shell script (so we can apply ulimit)
-CMD ["bash", "start.sh"]
+# Start command
+CMD ["python", "bot.py"]
