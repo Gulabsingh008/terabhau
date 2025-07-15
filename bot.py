@@ -34,13 +34,12 @@ TEMP_DIR = 'temp'
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Initialize Pyrogram client
 bot = Client(
     'terabox_bot',
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=4
+    workers=16  # Increased from 4 to 16
 )
 
 def parse_size(size_str):
@@ -50,21 +49,22 @@ def parse_size(size_str):
     return float(size) * units[unit.upper()]
 
 def download_with_aria(url, filename):
-    """Download file using aria2c with multiple connections"""
     cmd = [
         'aria2c',
-        '-x', '16',  # Use 16 connections
-        '-s', '16',
+        '-x', '32',  # Increased from 16 to 32 connections
+        '-s', '32',
+        '-k', '2M',  # Split file into 2MB segments
+        '-j', '32',  # Max parallel downloads per file
         '-d', DOWNLOAD_DIR,
         '-o', filename,
-        '--file-allocation=none',
+        '--file-allocation=falloc',  # Faster disk allocation
         '--summary-interval=0',
         '--console-log-level=warn',
         url
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     return os.path.join(DOWNLOAD_DIR, filename), result.returncode == 0
-
+    
 def get_zozo_data(url):
     """Fetch video metadata from Zozo API"""
     try:
@@ -189,13 +189,14 @@ async def send_video(message: Message, file_path: str, file_name: str):
     )
     
     try:
-        # Send video with progress
         await message.reply_video(
             video=file_path,
             caption=f"✅ {file_name}\n\nPowered by @{bot.me.username}",
             supports_streaming=True,
             progress=progress_callback,
-            progress_args=(msg, file_name)
+            progress_args=(msg, file_name),
+            chunk_size=5 * 1024 * 1024,  # Increased to 5MB chunks
+            workers=4  # Parallel upload threads
         )
         await msg.delete()
     except FilePartMissing as e:
