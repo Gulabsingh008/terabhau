@@ -166,9 +166,11 @@ async def handle_links(client: Client, message: Message):
                     return
                 
                 # Send video to user
-                bot.loop.create_task(
-                    send_video(message, file_path, file_name)
+                asyncio.run_coroutine_threadsafe(
+                    send_video(message, file_path, file_name),
+                    bot.loop
                 )
+                
             except Exception as e:
                 logger.error(f'Download error: {str(e)}')
                 bot.loop.create_task(
