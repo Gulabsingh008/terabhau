@@ -25,9 +25,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Telegram bot configuration
-API_ID = os.environ.get('API_ID', '26494161')
-API_HASH = os.environ.get('API_HASH', '55da841f877d16a3a806169f3c5153d3')
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '7758524025:AAEVf_OePVQ-6hhM1GfvRlqX3QZIqDOivtw')
+API_ID = os.environ.get('API_ID', '12345678')
+API_HASH = os.environ.get('API_HASH', 'abcdef1234567890abcdef1234567890')
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZ')
 DOWNLOAD_DIR = 'downloads'
 TEMP_DIR = 'temp'
 
@@ -69,8 +69,8 @@ async def download_with_aria2p(url, filename):
             "out": filename,
             "file-allocation": "falloc"  # Faster allocation
         }
-        download = aria2.add_uri([url], options=options)  # Fixed: add_uri, not add_urid
-        while not download.is_complete:
+        download = aria2.add_uri([url], options=options)  # Fixed: add_uri with URL as list
+        while not download.is_complete and not download.has_failed:
             await asyncio.sleep(1)  # Async wait for completion
         file_path = os.path.join(DOWNLOAD_DIR, filename)
         return file_path, download.is_complete
@@ -169,19 +169,23 @@ async def handle_links(client: Client, message: Message):
                 future = asyncio.run_coroutine_threadsafe(download_with_aria2p(download_link, file_name), bot.loop)
                 file_path, success = future.result()
                 if not success:
-                    asyncio.run_coroutine_threadsafe(msg.edit_text(f"❌ Download failed for {file_name}"), bot.loop).result()
+                    asyncio.run_coroutine_threadsafe(async_edit_msg(msg, f"❌ Download failed for {file_name}"), bot.loop).result()
                     return
                 
                 asyncio.run_coroutine_threadsafe(send_video(message, file_path, file_name), bot.loop).result()
             except Exception as e:
                 logger.error(f'Download error: {str(e)}')
-                asyncio.run_coroutine_threadsafe(msg.edit_text(f"❌ Download error: {str(e)}"), bot.loop).result()
+                asyncio.run_coroutine_threadsafe(async_edit_msg(msg, f"❌ Download error: {str(e)}"), bot.loop).result()
         
         threading.Thread(target=download_task).start()
         
     except Exception as e:
         logger.error(f'Processing error: {str(e)}')
         await msg.edit_text(f"❌ Error: {str(e)}")
+
+async def async_edit_msg(msg: Message, text: str):
+    """Async wrapper for editing message"""
+    await msg.edit_text(text)
 
 async def send_video(message: Message, file_path: str, file_name: str):
     """Send video to user with progress updates"""
@@ -244,7 +248,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=PORT, threaded=True)
 
 if __name__ == '__main__':
-    # Start Flask server in background thread
+    # Start Flask server in separate thread
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
