@@ -27,8 +27,11 @@ COPY . .
 RUN mkdir -p downloads temp && \
     chmod 777 downloads temp
 
+# Make start.sh executable
+RUN chmod +x start.sh
+
 # Expose port
 EXPOSE 8080
 
-# Start via custom shell script (applies ulimit/sysctl)
-CMD ["bash", "start.sh"]
+# Start via custom shell script (starts aria2c, applies ulimit/sysctl, runs bot)
+CMD ["./start.sh"]
