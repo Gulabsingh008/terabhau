@@ -46,15 +46,6 @@ def parse_size(size_str):
     size, unit = re.match(r'([\d.]+)\s*([A-Za-z]+)', size_str).groups()
     return float(size) * units[unit.upper()]
 
-def download_with_aria(url, filename):
-    cmd = [
-        'aria2c', '-x', '32', '-s', '32', '-k', '2M', '-j', '32',
-        '-d', DOWNLOAD_DIR, '-o', filename,
-        '--file-allocation=falloc', '--summary-interval=0', '--console-log-level=warn', url
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    return os.path.join(DOWNLOAD_DIR, filename), result.returncode == 0
-
 def get_zozo_data(url):
     try:
         api_url = f'https://zozo-api.onrender.com/download?url={url}'
@@ -91,7 +82,7 @@ async def start_command(client: Client, message: Message):
         "- Supports videos up to 2GB\n"
         "- Fast downloads using multi-connection\n"
         "- Direct streaming option\n\n"
-        "Created by Zozo rrr ️"
+        "Created by Zozo ️ ji"
     )
     await message.reply_text(help_text)
 
@@ -119,14 +110,34 @@ async def handle_links(client: Client, message: Message):
 
         def download_task():
             try:
-                file_path, success = download_with_aria(download_link, file_name)
-                if not success:
+                proc = subprocess.Popen([
+                    'aria2c', '-x', '32', '-s', '32', '-k', '2M', '-j', '32',
+                    '-d', DOWNLOAD_DIR, '-o', file_name,
+                    '--file-allocation=falloc', '--summary-interval=1', '--console-log-level=warn', download_link
+                ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+                while True:
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+                    match = re.search(r'\((\d+)%\)', line)
+                    if match:
+                        percent = int(match.group(1))
+                        progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
+                        asyncio.run_coroutine_threadsafe(
+                            msg.edit_text(f"⬇️ Downloading: {file_name}\n{progress_bar} {percent}%"),
+                            bot.loop
+                        )
+
+                proc.wait()
+                if proc.returncode != 0:
                     asyncio.run_coroutine_threadsafe(
                         msg.edit_text(f"❌ Download failed for {file_name}"),
                         bot.loop
                     )
                     return
 
+                file_path = os.path.join(DOWNLOAD_DIR, file_name)
                 asyncio.run_coroutine_threadsafe(
                     msg.edit_text(f"✅ Download complete. Uploading: {file_name}\n⏳ Please wait..."),
                     bot.loop
