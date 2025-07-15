@@ -6,9 +6,10 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     iproute2 \
     procps \
+    sysvinit-utils \  # For sysctl support
     && rm -rf /var/lib/apt/lists/*
 
-# Optional TCP buffer tuning (Note: Render may ignore)
+# Apply TCP buffer tuning
 RUN echo "net.core.rmem_max=4194304" >> /etc/sysctl.conf && \
     echo "net.core.wmem_max=4194304" >> /etc/sysctl.conf
 
@@ -19,14 +20,15 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application code (including start.sh)
 COPY . .
 
-# Create required directories
-RUN mkdir -p downloads temp
+# Create required directories with permissions
+RUN mkdir -p downloads temp && \
+    chmod 777 downloads temp
 
 # Expose port
 EXPOSE 8080
 
-# Start via custom shell script (so we can apply ulimit)
+# Start via custom shell script (applies ulimit/sysctl)
 CMD ["bash", "start.sh"]
