@@ -1,11 +1,10 @@
 #!/bin/bash
 
-# Set open file limit (may not fully work on Render, but we try)
+# Apply file descriptor limits
 ulimit -n 100000
 
-# Optional: print limits for logging/debugging
-echo "Open file limit: $(ulimit -n)"
-echo "Running bot..."
+# Apply TCP tuning (if supported)
+sysctl -p /etc/sysctl.conf
 
-# Start your bot
+# Run the bot
 python bot.py
