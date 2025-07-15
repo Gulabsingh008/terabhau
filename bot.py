@@ -129,15 +129,25 @@ async def handle_links(client: Client, message: Message):
             try:
                 file_path, success = download_with_aria(download_link, file_name)
                 if not success:
-                    loop.call_soon_threadsafe(asyncio.create_task, msg.edit_text(f"❌ Download failed for {file_name}"))
+                    loop.call_soon_threadsafe(lambda: asyncio.create_task(
+                        msg.edit_text(f"❌ Download failed for {file_name}")
+                    ))
                     return
-
-                loop.call_soon_threadsafe(asyncio.create_task, msg.edit_text(f"✅ Download complete. Uploading: {file_name}\n⏳ Please wait..."))
-                loop.call_soon_threadsafe(asyncio.create_task, send_video(message, file_path, file_name, msg))
-
+        
+                loop.call_soon_threadsafe(lambda: asyncio.create_task(
+                    msg.edit_text(f"✅ Download complete. Uploading: {file_name}\n⏳ Please wait...")
+                ))
+        
+                loop.call_soon_threadsafe(lambda: asyncio.create_task(
+                    send_video(message, file_path, file_name, msg)
+                ))
+        
             except Exception as e:
                 logger.error(f'Download error: {str(e)}')
-                loop.call_soon_threadsafe(asyncio.create_task, msg.edit_text(f"❌ Download error: {str(e)}"))
+                loop.call_soon_threadsafe(lambda: asyncio.create_task(
+                    msg.edit_text(f"❌ Download error: {str(e)}")
+                ))
+
 
         threading.Thread(target=download_task).start()
 
