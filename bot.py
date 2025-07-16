@@ -66,8 +66,8 @@ def download_with_aria2p(url, filename):
             "out": filename,
             "file-allocation": "falloc"
         }
-        downloads = aria2.add_uris([url], options=options)
-        download = downloads[0]
+        download = aria2.add_uris([url], options=options)
+
 
         while not download.is_complete and not download.has_failed:
             time.sleep(1)
