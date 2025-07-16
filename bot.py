@@ -66,7 +66,8 @@ def download_with_aria2p(url, filename):
             "out": filename,
             "file-allocation": "falloc"
         }
-        download = aria2.add_uris([url], options=options)[0]
+        downloads = aria2.add_uris([url], options=options)
+        download = downloads[0]
 
         while not download.is_complete and not download.has_failed:
             time.sleep(1)
@@ -77,6 +78,7 @@ def download_with_aria2p(url, filename):
     except Exception as e:
         logger.error(f"Download error: {str(e)}")
         return None, False
+
 
 def get_zozo_data(url):
     try:
@@ -199,14 +201,13 @@ async def send_video(message: Message, file_path: str, file_name: str):
     try:
         me = await bot.get_me()
         await message.reply_video(
-            video=file_path,
-            caption=f"✅ {file_name}\n\nPowered by @{me.username}",
-            supports_streaming=True,
-            progress=progress_callback,
-            progress_args=(msg, file_name),
-            chunk_size=2 * 1024 * 1024,
-            workers=8
-        )
+        video=file_path,
+        caption=f"✅ {file_name}\n\nPowered by @{me.username}",
+        supports_streaming=True,
+        progress=progress_callback,
+        progress_args=(msg, file_name)
+    )
+
         await msg.delete()
     except FilePartMissing as e:
         await async_edit_msg(msg, f"❌ Upload failed: {str(e)}")
