@@ -198,9 +198,10 @@ async def send_video(message: Message, file_path: str, file_name: str):
     )
 
     try:
+        me = await bot.get_me()  # ✅ Fix: Fetch bot username dynamically
         await message.reply_video(
             video=file_path,
-            caption=f"✅ {file_name}\n\nPowered by @{bot.me.username}",
+            caption=f"✅ {file_name}\n\nPowered by @{me.username}",
             supports_streaming=True,
             progress=progress_callback,
             progress_args=(msg, file_name),
