@@ -1,80 +1,25 @@
-import os
-import aiohttp
-import asyncio
-import logging
-from pyrogram import Client, filters
-from pyrogram.types import Message
+FROM python:3.9-slim
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+WORKDIR /app
 
-# Configuration
-API_ID = int(os.getenv('API_ID', '24519654'))
-API_HASH = os.getenv('API_HASH', '1ccea9c29a420df6a6622383fbd83bcd')
-BOT_TOKEN = os.getenv('BOT_TOKEN', '7598643423:AAEP6IeplxW-aE0jrW8xnaC59ug0kaPt4H8')
-TERABOX_API = os.getenv('TERABOX_API', 'https://zozo-api.onrender.com/download?url=')
-DOWNLOAD_DIR = "downloads"
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends aria2 && \
+    rm -rf /var/lib/apt/lists/*
 
-# Ensure download directory exists
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+# Copy requirements first for caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Initialize bot
-bot = Client(
-    "terabox_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    workers=2
-)
+# Copy the rest of the files
+COPY . .
 
-@bot.on_message(filters.command("start") & filters.private)
-async def start(client: Client, message: Message):
-    try:
-        await message.reply("🚀 TeraBox Download Bot is running!")
-        logger.info(f"Responded to start command from {message.from_user.id}")
-    except Exception as e:
-        logger.error(f"Start command error: {e}")
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
-@bot.on_message(filters.text & filters.private)
-async def handle_message(client: Client, message: Message):
-    try:
-        logger.info(f"Received message: {message.text}")
-        
-        if "terabox" not in message.text.lower():
-            await message.reply("Please send a TeraBox link")
-            return
-            
-        await message.reply("🔍 Processing your TeraBox link...")
-        
-        # Test API call
-        async with aiohttp.ClientSession() as session:
-            test_url = f"{TERABOX_API}https://example.terabox.com"
-            async with session.get(test_url) as resp:
-                logger.info(f"API test status: {resp.status}")
-                await message.reply(f"API test response: {resp.status}")
-                
-    except Exception as e:
-        logger.error(f"Message handling error: {e}")
-        await message.reply(f"Error: {str(e)}")
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s \
+  CMD python -c "import requests; requests.get('http://localhost:8080/ping', timeout=5)"
 
-async def main():
-    await bot.start()
-    logger.info("Bot started successfully")
-    await bot.send_message("me", "🤖 Bot is now online!")
-    await bot.idle()
-
-if __name__ == "__main__":
-    # Verify essential requirements
-    try:
-        import pyrogram
-        import aiohttp
-        logger.info("All imports working")
-    except ImportError as e:
-        logger.error(f"Import error: {e}")
-        exit(1)
-
-    asyncio.run(main())
+CMD ["python", "main.py"]
