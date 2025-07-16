@@ -15,19 +15,44 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+logging.getLogger('telethon').setLevel(logging.INFO)
 
 # Environment variables
 API_ID = int(os.getenv('API_ID', 26494161))
 API_HASH = os.getenv('API_HASH', '55da841f877d16a3a806169f3c5153d3')
 BOT_TOKEN = os.getenv('BOT_TOKEN', '7758524025:AAEVf_OePVQ-6hhM1GfvRlqX3QZIqDOivtw')
 API_ENDPOINT = os.getenv('API_ENDPOINT', 'http://zozo-api.onrender.com/download?url=')
-PORT = int(os.getenv('PORT', 8080))
+PORT = int(os.getenv('PORT', 10000))  # Updated for Render
 MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB
+MAX_RETRIES = 5
+RETRY_DELAY = 10
 
 # Initialize Telegram client
-bot = TelegramClient('terabox_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+bot = TelegramClient(
+    'terabox_bot', 
+    API_ID, 
+    API_HASH,
+    connection_retries=None
+).start(bot_token=BOT_TOKEN)
 
-# Start command handler
+# Web handlers
+async def home_handler(request):
+    return web.Response(text="🚀 Terabox Downloader Bot is running\n\nUse /start in Telegram to begin")
+
+async def health_check(request):
+    return web.Response(text="✅ Bot is healthy and running")
+
+async def start_server():
+    app = web.Application()
+    app.router.add_get('/', home_handler)
+    app.router.add_get('/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    logger.info(f"Server started on port {PORT}")
+
+# Bot command handlers
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     welcome_message = """
@@ -49,11 +74,17 @@ Enjoy using the bot! 😊
 """
     await event.reply(welcome_message, parse_mode='md')
 
+# Utility functions
 async def fetch_terabox_data(url):
     async with aiohttp.ClientSession() as session:
-        async with session.get(f"{API_ENDPOINT}{url}") as resp:
-            if resp.status == 200:
-                return await resp.json()
+        try:
+            async with session.get(f"{API_ENDPOINT}{url}", timeout=60) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                logger.error(f"API request failed with status {resp.status}")
+                return None
+        except Exception as e:
+            logger.error(f"Error fetching terabox data: {e}")
             return None
 
 async def download_with_progress(url, file_path, message, download_type="Downloading"):
@@ -63,6 +94,8 @@ async def download_with_progress(url, file_path, message, download_type="Downloa
         '--split=16',
         '--dir=/tmp',
         '--out=' + file_path,
+        '--summary-interval=5',
+        '--auto-file-renaming=false',
         url
     ]
     
@@ -83,9 +116,9 @@ async def download_with_progress(url, file_path, message, download_type="Downloa
                     total_size = parts[5]
                     
                     current_time = datetime.now().timestamp()
-                    if current_time - last_update_time > 5:  # Update every 5 seconds
+                    if current_time - last_update_time > 5:
                         await message.edit(f"**{download_type} Progress**\n\n"
-                                        f"**File:** `{file_path}`\n"
+                                        f"**File:** `{os.path.basename(file_path)}`\n"
                                         f"**Progress:** `{percent}`\n"
                                         f"**Downloaded:** `{downloaded}` of `{total_size}`\n"
                                         f"**Speed:** `{speed}`")
@@ -104,12 +137,12 @@ async def upload_with_progress(client, file_path, message, chat_id, thumb_path=N
         nonlocal uploaded, last_update_time
         uploaded = current
         current_time = datetime.now().timestamp()
-        if current_time - last_update_time > 5:  # Update every 5 seconds
+        if current_time - last_update_time > 5:
             percent = (current / total) * 100
             speed = (current - uploaded) / (1024 * 1024 * 5)  # MB per 5 sec
             asyncio.create_task(
                 message.edit(f"**Uploading Progress**\n\n"
-                           f"**File:** `{file_path}`\n"
+                           f"**File:** `{os.path.basename(file_path)}`\n"
                            f"**Progress:** `{percent:.2f}%`\n"
                            f"**Uploaded:** `{current / (1024 * 1024):.2f}MB` of `{total / (1024 * 1024):.2f}MB`\n"
                            f"**Speed:** `{speed:.2f} MB/s`")
@@ -119,7 +152,6 @@ async def upload_with_progress(client, file_path, message, chat_id, thumb_path=N
     try:
         attributes = []
         if file_path.lower().endswith(('.mp4', '.mkv', '.mov', '.avi')):
-            # Get video duration and dimensions using ffmpeg
             cmd = [
                 'ffprobe', '-v', 'error', '-show_entries',
                 'format=duration:stream=width,height', '-of',
@@ -144,7 +176,6 @@ async def upload_with_progress(client, file_path, message, chat_id, thumb_path=N
                     )
                 ]
         
-        # Generate thumbnail if not provided
         if thumb_path is None and file_path.lower().endswith(('.mp4', '.mkv', '.mov', '.avi')):
             thumb_path = f"/tmp/{os.path.basename(file_path)}.jpg"
             cmd = [
@@ -162,38 +193,42 @@ async def upload_with_progress(client, file_path, message, chat_id, thumb_path=N
             thumb=thumb_path,
             attributes=attributes,
             progress_callback=progress_callback,
-            caption=f"Uploaded by Terabox Bot"
+            caption=f"📁 Uploaded by Terabox Bot\n\n🔗 Original URL: {message.text}"
         )
         
         return True
     except Exception as e:
-        logger.error(f"Upload error: {e}")
+        logger.error(f"Upload error: {e}", exc_info=True)
         return False
     finally:
         if thumb_path and os.path.exists(thumb_path):
             os.remove(thumb_path)
 
+# Main handler
 @bot.on(events.NewMessage(pattern=r'https?://[^\s]+terabox[^\s]+'))
 async def handle_terabox_link(event):
+    if event.message.out:
+        return
+    
     url = event.text.strip()
-    message = await event.reply("Processing your Terabox link...")
+    message = await event.reply("🔍 Processing your Terabox link...")
     
     try:
-        # Fetch terabox data from API
+        # Fetch terabox data
         data = await fetch_terabox_data(url)
         if not data:
-            await message.edit("Failed to fetch Terabox data. Please check the link and try again.")
+            await message.edit("❌ Failed to fetch Terabox data. Please check the link and try again.")
             return
         
-        file_name = data.get('name', 'terabox_file')
+        file_name = data.get('name', f"terabox_file_{int(time.time())}")
         download_url = data.get('download_link')
         thumbnail_url = data.get('thumbnail')
         
         if not download_url:
-            await message.edit("No download link found in the response.")
+            await message.edit("❌ No download link found in the response.")
             return
         
-        # Download thumbnail if available
+        # Download thumbnail
         thumb_path = None
         if thumbnail_url:
             thumb_path = f"/tmp/thumb_{os.path.basename(file_name)}.jpg"
@@ -203,32 +238,32 @@ async def handle_terabox_link(event):
         
         # Download main file
         file_path = f"/tmp/{file_name}"
-        await message.edit("Starting download...")
+        await message.edit("⬇️ Starting download...")
         success = await download_with_progress(download_url, file_path, message)
         
         if not success:
-            await message.edit("Failed to download the file.")
+            await message.edit("❌ Failed to download the file.")
             return
         
         # Check file size
         file_size = os.path.getsize(file_path)
         if file_size > MAX_FILE_SIZE:
-            await message.edit(f"File is too large ({file_size / (1024 * 1024):.2f}MB). Max allowed size is {MAX_FILE_SIZE / (1024 * 1024):.2f}MB.")
+            await message.edit(f"❌ File is too large ({file_size / (1024 * 1024):.2f}MB). Max allowed size is {MAX_FILE_SIZE / (1024 * 1024):.2f}MB.")
             os.remove(file_path)
             return
         
         # Upload to Telegram
-        await message.edit("Starting upload...")
+        await message.edit("⬆️ Starting upload...")
         success = await upload_with_progress(bot, file_path, message, event.chat_id, thumb_path)
         
         if success:
-            await message.edit("File successfully uploaded!")
+            await message.edit("✅ File successfully uploaded!")
         else:
-            await message.edit("Failed to upload the file.")
+            await message.edit("❌ Failed to upload the file.")
         
     except Exception as e:
-        logger.error(f"Error processing Terabox link: {e}")
-        await message.edit(f"An error occurred: {str(e)}")
+        logger.error(f"Error processing Terabox link: {e}", exc_info=True)
+        await message.edit(f"⚠️ An error occurred: {str(e)}")
     finally:
         # Clean up
         if 'file_path' in locals() and os.path.exists(file_path):
@@ -236,24 +271,31 @@ async def handle_terabox_link(event):
         if 'thumb_path' in locals() and thumb_path and os.path.exists(thumb_path):
             os.remove(thumb_path)
 
-async def health_check(request):
-    return web.Response(text="Bot is running")
-
-async def start_server():
-    app = web.Application()
-    app.router.add_get('/health', health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
-    logger.info(f"Server started on port {PORT}")
-
+# Main function with retry logic
 async def main():
-    await asyncio.gather(
-        bot.start(),
-        start_server()
-    )
-    await bot.run_until_disconnected()
+    retry_count = 0
+    
+    while retry_count < MAX_RETRIES:
+        try:
+            await asyncio.gather(
+                bot.start(),
+                start_server()
+            )
+            logger.info("Bot started successfully")
+            await bot.run_until_disconnected()
+        except Exception as e:
+            logger.error(f"Connection error (attempt {retry_count + 1}/{MAX_RETRIES}): {e}")
+            retry_count += 1
+            if retry_count < MAX_RETRIES:
+                await asyncio.sleep(RETRY_DELAY)
+            else:
+                logger.error("Max retries reached. Exiting.")
+                raise
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
