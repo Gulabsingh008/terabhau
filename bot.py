@@ -18,11 +18,12 @@ logger = logging.getLogger(__name__)
 logging.getLogger('telethon').setLevel(logging.INFO)
 
 # Environment variables
-API_ID = int(os.getenv('API_ID', 26494161))
+API_ID = int(os.getenv('API_ID') or 26494161)
+PORT = int(os.getenv('PORT') or 10000)
+
 API_HASH = os.getenv('API_HASH', '55da841f877d16a3a806169f3c5153d3')
 BOT_TOKEN = os.getenv('BOT_TOKEN', '7758524025:AAEVf_OePVQ-6hhM1GfvRlqX3QZIqDOivtw')
 API_ENDPOINT = os.getenv('API_ENDPOINT', 'http://zozo-api.onrender.com/download?url=')
-PORT = int(os.getenv('PORT', 10000))  # Updated for Render
 MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB
 MAX_RETRIES = 5
 RETRY_DELAY = 10
