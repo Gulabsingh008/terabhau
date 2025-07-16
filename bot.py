@@ -66,8 +66,7 @@ def download_with_aria2p(url, filename):
             "out": filename,
             "file-allocation": "falloc"
         }
-        downloads = aria2.add_uris([url], options=options)
-        download = downloads[0]
+        download = aria2.add_uris([url], options=options)
 
         while not download.is_complete and not download.has_failed:
             time.sleep(1)
@@ -150,22 +149,18 @@ async def handle_links(client: Client, message: Message):
         await async_edit_msg(msg, f" Downloading: {file_name}\n Size: {data['size']}\n⏳ This may take a while...")
 
         def download_task(msg_obj, message_obj, download_link, file_name):
-            try:
-                future = asyncio.run_coroutine_threadsafe(
-                    download_with_aria2p(download_link, file_name),
-                    bot.loop
-                )
-                file_path, success = future.result()
-
+            async def async_download_and_send():
+                file_path, success = await download_with_aria2p(download_link, file_name)
+                
                 if not success:
-                    asyncio.run_coroutine_threadsafe(
-                        async_edit_msg(msg_obj, f"❌ Download failed for {file_name}"),
-                        bot.loop
-                    ).result()
+                    await async_edit_msg(msg_obj, f"❌ Download failed for {file_name}")
                     return
-
+                
+                await send_video(message_obj, file_path, file_name)
+        
+            try:
                 asyncio.run_coroutine_threadsafe(
-                    send_video(message_obj, file_path, file_name),
+                    async_download_and_send(),
                     bot.loop
                 ).result()
             except Exception as e:
@@ -174,15 +169,13 @@ async def handle_links(client: Client, message: Message):
                     async_edit_msg(msg_obj, f"❌ Download error: {str(e)}"),
                     bot.loop
                 ).result()
-
+        
+        # ⬇️ Run download in a new thread (outside try-except)
         threading.Thread(
             target=download_task,
             args=(msg, message, download_link, file_name)
         ).start()
-
-    except Exception as e:
-        logger.error(f'Processing error: {str(e)}')
-        await async_edit_msg(msg, f"❌ Error: {str(e)}")
+    
 
 async def async_edit_msg(msg: Message, text: str):
     try:
