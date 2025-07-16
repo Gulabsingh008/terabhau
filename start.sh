@@ -1,13 +1,10 @@
-# ✅ Updated start.sh
-# Note: aria2c has max limit of 16 connections per server. Your old value 32 was invalid.
-
 #!/bin/bash
 
-echo "🔄 Starting Aria2c in daemon mode with safe config..."
-
+# Start aria2c daemon
+echo "🔄 Starting Aria2c..."
 aria2c \
   --enable-rpc \
-  --rpc-listen-all=true \
+  --rpc-listen-all \
   --rpc-allow-origin-all \
   --rpc-listen-port=6800 \
   --max-connection-per-server=16 \
@@ -18,10 +15,12 @@ aria2c \
   --max-concurrent-downloads=5 \
   --daemon=true
 
-echo "✅ Aria2c daemon started."
+# Wait for aria2c to be ready
+echo "⏳ Waiting for Aria2c RPC..."
+while ! aria2p --port 6800 stats >/dev/null 2>&1; do
+  sleep 1
+done
 
-# Wait to ensure aria2 is ready
-sleep 2
-
+# Start the bot
 echo "🚀 Starting Telegram Bot..."
 python bot.py
