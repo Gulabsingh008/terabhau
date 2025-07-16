@@ -66,14 +66,19 @@ async def download_with_aria2p(url, filename):
             "out": filename,
             "file-allocation": "falloc"
         }
-        download = aria2.add_uri([url], options=options)
+        downloads = aria2.add_uris([url], options=options)
+        download = downloads[0]  # Fix: aria2p returns list
+
         while not download.is_complete and not download.has_failed:
             await asyncio.sleep(1)
+            download.update()  # Very important to update status
+
         file_path = os.path.join(DOWNLOAD_DIR, filename)
         return file_path, download.is_complete
     except Exception as e:
         logger.error(f"Download error: {str(e)}")
         return None, False
+
 
 def get_zozo_data(url):
     try:
