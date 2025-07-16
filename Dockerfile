@@ -1,27 +1,26 @@
+# Dockerfile
 FROM python:3.9-slim
 
-# Install system dependencies
+WORKDIR /app
+
+# Install dependencies
 RUN apt-get update && apt-get install -y \
     aria2 \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
-WORKDIR /app
-
-# Install Python dependencies
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy the rest of the application
 COPY . .
 
-# Create required directories
-RUN mkdir -p downloads temp && \
-    chmod -R 777 downloads temp
+# Environment variables
+ENV API_ID=your_api_id
+ENV API_HASH=your_api_hash
+ENV BOT_TOKEN=your_bot_token
+ENV API_ENDPOINT=http://zozo-api.onrender.com/download?url=
+ENV PORT=8080
 
-# Expose ports
-EXPOSE 8080 6800
-
-# Start command
-CMD ["bash", "start.sh"]
+CMD ["python", "bot.py"]
