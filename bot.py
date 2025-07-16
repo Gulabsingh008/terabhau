@@ -171,10 +171,10 @@ async def handle_links(client: Client, message: Message):
                 ).result()
         
         # ⬇️ Run download in a new thread (outside try-except)
-        threading.Thread(
-            target=download_task,
-            args=(msg, message, download_link, file_name)
-        ).start()
+threading.Thread(
+    target=download_task,
+    args=(msg, message, download_link, file_name)
+).start()
     
 
 async def async_edit_msg(msg: Message, text: str):
