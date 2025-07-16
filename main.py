@@ -5,14 +5,13 @@ import shutil
 import subprocess
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from os import environ
 
-# ✅ API and Telegram Credentials from ENV
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_ID = int(environ.get('API_ID', '24519654'))  # default fallback
+API_HASH = environ.get('API_HASH', '1ccea9c29a420df6a6622383fbd83bcd')
+BOT_TOKEN = environ.get('BOT_TOKEN', '7598643423:AAEP6IeplxW-aE0jrW8xnaC59ug0kaPt4H8')
+TERABOX_API = environ.get('TERABOX_API', 'https://zozo-api.onrender.com/download?url=')
 
-# ✅ Your TeraBox API endpoint
-TERABOX_API = "https://zozo-api.onrender.com/download?url="
 
 # ✅ Temp folder
 DOWNLOAD_DIR = "downloads"
