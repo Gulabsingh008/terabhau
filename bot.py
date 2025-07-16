@@ -5,6 +5,9 @@ import requests
 import logging
 import threading
 import asyncio
+import time
+import aria2p  # For high-speed downloads
+import ffmpeg  # For streaming
 from flask import Flask, Response, jsonify
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -29,7 +32,6 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '7758524025:AAEVf_OePVQ-6hhM1GfvRlqX3QZI
 DOWNLOAD_DIR = 'downloads'
 TEMP_DIR = 'temp'
 
-# Create directories if not exists
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
@@ -41,30 +43,45 @@ bot = Client(
     workers=8
 )
 
+aria2 = aria2p.API(
+    client=aria2p.Client(
+        host="http://localhost",
+        port=6800,
+        secret=""
+    )
+)
+
 def parse_size(size_str):
     units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
     size, unit = re.match(r'([\d.]+)\s*([A-Za-z]+)', size_str).groups()
     return float(size) * units[unit.upper()]
 
-def download_with_aria(url, filename):
-    cmd = [
-        'aria2c',
-        '-x', '32',  # Increased from 16 to 32 connections
-        '-s', '32',
-        '-d', DOWNLOAD_DIR,
-        '-o', filename,
-        '--file-allocation=none',
-        '--summary-interval=0',
-        '--console-log-level=warn',
-        url
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    return os.path.join(DOWNLOAD_DIR, filename), result.returncode == 0
+def download_with_aria2p(url, filename):
+    try:
+        options = {
+            "max-connection-per-server": "16",
+            "split": "16",
+            "min-split-size": "2M",
+            "dir": DOWNLOAD_DIR,
+            "out": filename,
+            "file-allocation": "falloc"
+        }
+        download = aria2.add_uris([url], options=options)
+
+        while not download.is_complete and not download.has_failed:
+            time.sleep(1)
+            download.update()
+
+        file_path = os.path.join(DOWNLOAD_DIR, filename)
+        return file_path, download.is_complete
+    except Exception as e:
+        logger.error(f"Download error: {str(e)}")
+        return None, False
 
 def get_zozo_data(url):
     try:
         api_url = f'https://zozo-api.onrender.com/download?url={url}'
-        response = requests.get(api_url, timeout=10)
+        response = requests.get(api_url, timeout=30)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -83,18 +100,13 @@ def home():
 def stream_video(url):
     url = unquote(url)
     try:
-        cmd = [
-            'ffmpeg',
-            '-i', url,
-            '-f', 'mp4',
-            '-movflags', 'frag_keyframe+empty_moov',
-            '-'
-        ]
-        return Response(
-            subprocess.Popen(cmd, stdout=subprocess.PIPE).stdout,
-            mimetype='video/mp4',
-            direct_passthrough=True
+        process = (
+            ffmpeg
+            .input(url)
+            .output('pipe:', format='mp4', movflags='frag_keyframe+empty_moov')
+            .run_async(pipe_stdout=True)
         )
+        return Response(process.stdout, mimetype='video/mp4')
     except Exception as e:
         logger.error(f'Stream error: {str(e)}')
         return jsonify({'error': 'Stream failed'}), 500
@@ -116,58 +128,90 @@ async def start_command(client: Client, message: Message):
 async def handle_links(client: Client, message: Message):
     url = message.text.strip()
     msg = await message.reply_text(" Fetching video info from Zozo API...")
-    
+
     data = get_zozo_data(url)
     if not data:
-        await msg.edit_text("❌ Failed to fetch video info. Please try again later.")
+        await async_edit_msg(msg, "❌ Failed to fetch video info. Please try again later.")
         return
-    
+
     try:
         file_name = data['name']
         size_bytes = parse_size(data['size'])
         download_link = data['download_link']
-        
-        MAX_SIZE = 2 * 1024**3  # 2GB
-        if size_bytes > MAX_SIZE:
-            await msg.edit_text(f"❌ File too large ({data['size']}). Max supported size is 2GB.")
-            return
-        
-        await msg.edit_text(f" Downloading: {file_name}\n Size: {data['size']}\n⏳ This may take a while...")
+        stream_link = data['stream_link']
 
-        def download_task():
-            try:
-                file_path, success = download_with_aria(download_link, file_name)
+        MAX_SIZE = 2 * 1024**3
+        if size_bytes > MAX_SIZE:
+            await async_edit_msg(msg, f"❌ File too large ({data['size']}). Max supported size is 2GB.")
+            return
+
+        await async_edit_msg(msg, f" Downloading: {file_name}\n Size: {data['size']}\n⏳ This may take a while...")
+
+        def download_task(msg_obj, message_obj, download_link, file_name):
+            async def async_download_and_send():
+                file_path, success = download_with_aria2p(download_link, file_name)
+                
                 if not success:
-                    bot.loop.create_task(msg.edit_text(f"❌ Download failed for {file_name}"))
+                    await async_edit_msg(msg_obj, f"❌ Download failed for {file_name}")
                     return
                 
-                bot.loop.create_task(send_video(message, file_path, file_name))
+                await send_video(message_obj, file_path, file_name)
+        
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    async_download_and_send(),
+                    bot.loop
+                ).result()
             except Exception as e:
                 logger.error(f'Download error: {str(e)}')
-                bot.loop.create_task(msg.edit_text(f"❌ Download error: {str(e)}"))
-        
-        threading.Thread(target=download_task).start()
-        
+                asyncio.run_coroutine_threadsafe(
+                    async_edit_msg(msg_obj, f"❌ Download error: {str(e)}"),
+                    bot.loop
+                ).result()
+
+        # ✅ FIXED: Properly indented outside try block
+        threading.Thread(
+            target=download_task,
+            args=(msg, message, download_link, file_name)
+        ).start()
+
     except Exception as e:
-        logger.error(f'Processing error: {str(e)}')
-        await msg.edit_text(f"❌ Error: {str(e)}")
+        await async_edit_msg(msg, f"❌ Error processing video: {str(e)}")
+        return
+
+async def async_edit_msg(msg: Message, text: str):
+    try:
+        if msg.text != text:
+            await msg.edit_text(text)
+    except FloodWait as fw:
+        await asyncio.sleep(fw.value)
+        await msg.edit_text(text)
+    except Exception as e:
+        if "MESSAGE_NOT_MODIFIED" not in str(e):
+            logger.error(f"Message edit failed: {str(e)}")
 
 async def send_video(message: Message, file_path: str, file_name: str):
-    msg = await message.reply_text(f" Uploading: {file_name}\n⏳ Please wait...")
-    
+    msg = await message.reply_text(
+        f" Uploading: {file_name}\n"
+        "⏳ Please wait..."
+    )
+
     try:
+        me = await bot.get_me()
         await message.reply_video(
             video=file_path,
-            caption=f"✅ {file_name}\n\nPowered by @{bot.me.username}",
+            caption=f"✅ {file_name}\n\nPowered by @{me.username}",
             supports_streaming=True,
             progress=progress_callback,
-            progress_args=(msg, file_name)
+            progress_args=(msg, file_name),
+            chunk_size=2 * 1024 * 1024,
+            workers=8
         )
         await msg.delete()
     except FilePartMissing as e:
-        await msg.edit_text(f"❌ Upload failed: {str(e)}")
+        await async_edit_msg(msg, f"❌ Upload failed: {str(e)}")
     except Exception as e:
-        await msg.edit_text(f"❌ Upload error: {str(e)}")
+        await async_edit_msg(msg, f"❌ Upload error: {str(e)}")
     finally:
         try:
             os.remove(file_path)
@@ -177,8 +221,15 @@ async def send_video(message: Message, file_path: str, file_name: str):
 async def progress_callback(current, total, msg: Message, file_name: str):
     percent = current * 100 / total
     progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
+    new_text = (
+        f" Uploading: {file_name}\n"
+        f"{progress_bar}\n"
+        f" {human_readable_size(current)} / {human_readable_size(total)}"
+        f" ({percent:.1f}%)"
+    )
     try:
-        await msg.edit_text(f" Uploading: {file_name}\n{progress_bar}\n {human_readable_size(current)} / {human_readable_size(total)} ({percent:.1f}%)")
+        if msg.text != new_text:
+            await msg.edit_text(new_text)
     except:
         pass
 
