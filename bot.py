@@ -68,13 +68,19 @@ def download_with_aria2p(url, filename):
         }
         download = aria2.add_uris([url], options=options)
 
-
         while not download.is_complete and not download.has_failed:
             time.sleep(1)
             download.update()
 
         file_path = os.path.join(DOWNLOAD_DIR, filename)
+
+        # ✅ Extra safety
+        if not os.path.exists(file_path):
+            logger.error(f"Downloaded file not found: {file_path}")
+            return None, False
+
         return file_path, download.is_complete
+
     except Exception as e:
         logger.error(f"Download error: {str(e)}")
         return None, False
@@ -199,25 +205,32 @@ async def send_video(message: Message, file_path: str, file_name: str):
     )
 
     try:
+        # ✅ Check if file exists before sending
+        if not os.path.exists(file_path):
+            await async_edit_msg(msg, f"❌ Upload failed: File not found at path: {file_path}")
+            return
+
         me = await bot.get_me()
         await message.reply_video(
-        video=file_path,
-        caption=f"✅ {file_name}\n\nPowered by @{me.username}",
-        supports_streaming=True,
-        progress=progress_callback,
-        progress_args=(msg, file_name)
-    )
-
+            video=file_path,
+            caption=f"✅ {file_name}\n\nPowered by @{me.username}",
+            supports_streaming=True,
+            progress=progress_callback,
+            progress_args=(msg, file_name)
+        )
         await msg.delete()
+
     except FilePartMissing as e:
         await async_edit_msg(msg, f"❌ Upload failed: {str(e)}")
     except Exception as e:
         await async_edit_msg(msg, f"❌ Upload error: {str(e)}")
     finally:
         try:
-            os.remove(file_path)
+            if os.path.exists(file_path):
+                os.remove(file_path)
         except:
             pass
+
 
 async def progress_callback(current, total, msg: Message, file_name: str):
     percent = current * 100 / total
