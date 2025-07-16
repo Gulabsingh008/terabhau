@@ -25,5 +25,4 @@ RUN mkdir -p downloads temp
 EXPOSE 8080
 
 # Start command
-CMD ["python", "bot.py"]
 CMD ["bash", "start.sh"]
