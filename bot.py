@@ -1,163 +1,237 @@
 import os
-import asyncio
-import threading
 import logging
-from pathlib import Path
-from typing import Optional
-from telegram import Message
-from telegram.error import FloodWait, FilePartMissing
+import asyncio
+import aiohttp
+import json
+from telethon import TelegramClient, events
+from telethon.tl.types import DocumentAttributeVideo
+from subprocess import Popen, PIPE
+from datetime import datetime
+from aiohttp import web
 
 # Configure logging
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-class FileDownloaderBot:
-    MAX_SIZE = 2 * 1024**3  # 2GB
+# Environment variables
+API_ID = int(os.getenv('API_ID', 26494161))
+API_HASH = os.getenv('API_HASH', '55da841f877d16a3a806169f3c5153d3')
+BOT_TOKEN = os.getenv('BOT_TOKEN', '7758524025:AAEVf_OePVQ-6hhM1GfvRlqX3QZIqDOivtw')
+API_ENDPOINT = os.getenv('API_ENDPOINT', 'http://zozo-api.onrender.com/download?url=')
+PORT = int(os.getenv('PORT', 8080))
+MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB
+
+# Initialize Telegram client
+bot = TelegramClient('terabox_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+
+async def fetch_terabox_data(url):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{API_ENDPOINT}{url}") as resp:
+            if resp.status == 200:
+                return await resp.json()
+            return None
+
+async def download_with_progress(url, file_path, message, download_type="Downloading"):
+    cmd = [
+        'aria2c',
+        '--max-connection-per-server=16',
+        '--split=16',
+        '--dir=/tmp',
+        '--out=' + file_path,
+        url
+    ]
     
-    def __init__(self, bot):
-        self.bot = bot
-        self.active_downloads = {}
-        self.lock = threading.Lock()
-        self.download_dir = Path("downloads")
-        self.download_dir.mkdir(exist_ok=True)
+    process = Popen(cmd, stdout=PIPE, stderr=PIPE, universal_newlines=True)
+    
+    last_update_time = 0
+    while True:
+        output = process.stderr.readline()
+        if output == '' and process.poll() is not None:
+            break
+        if output:
+            if 'DOWNLOAD' in output:
+                try:
+                    parts = output.split()
+                    speed = parts[7]
+                    percent = parts[1]
+                    downloaded = parts[3]
+                    total_size = parts[5]
+                    
+                    current_time = datetime.now().timestamp()
+                    if current_time - last_update_time > 5:  # Update every 5 seconds
+                        await message.edit(f"**{download_type} Progress**\n\n"
+                                        f"**File:** `{file_path}`\n"
+                                        f"**Progress:** `{percent}`\n"
+                                        f"**Downloaded:** `{downloaded}` of `{total_size}`\n"
+                                        f"**Speed:** `{speed}`")
+                        last_update_time = current_time
+                except Exception as e:
+                    logger.error(f"Error parsing aria2c output: {e}")
+    
+    return process.poll() == 0
 
-    async def handle_file_request(self, data: dict, msg: Message, message: Message) -> None:
-        try:
-            file_name = data['name']
-            size_bytes = self.parse_size(data['size'])
-            download_link = data['download_link']
-            
-            if size_bytes > self.MAX_SIZE:
-                await self.edit_message(msg, f"❌ File too large ({data['size']}). Max supported size is 2GB.")
-                return
-
-            await self.edit_message(msg, f"📥 Downloading: {file_name}\n📦 Size: {data['size']}\n⏳ This may take a while...")
-
-            await asyncio.to_thread(
-                self.process_download,
-                msg, message, download_link, file_name
+async def upload_with_progress(client, file_path, message, chat_id, thumb_path=None):
+    last_update_time = 0
+    file_size = os.path.getsize(file_path)
+    uploaded = 0
+    
+    def progress_callback(current, total):
+        nonlocal uploaded, last_update_time
+        uploaded = current
+        current_time = datetime.now().timestamp()
+        if current_time - last_update_time > 5:  # Update every 5 seconds
+            percent = (current / total) * 100
+            speed = (current - uploaded) / (1024 * 1024 * 5)  # MB per 5 sec
+            asyncio.create_task(
+                message.edit(f"**Uploading Progress**\n\n"
+                           f"**File:** `{file_path}`\n"
+                           f"**Progress:** `{percent:.2f}%`\n"
+                           f"**Uploaded:** `{current / (1024 * 1024):.2f}MB` of `{total / (1024 * 1024):.2f}MB`\n"
+                           f"**Speed:** `{speed:.2f} MB/s`")
             )
-
-        except Exception as e:
-            logger.error(f'Processing error: {str(e)}')
-            await self.edit_message(msg, f"❌ Error: {str(e)}")
-
-    def process_download(self, msg: Message, message: Message, download_link: str, file_name: str) -> None:
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            last_update_time = current_time
+    
+    try:
+        attributes = []
+        if file_path.lower().endswith(('.mp4', '.mkv', '.mov', '.avi')):
+            # Get video duration and dimensions using ffmpeg
+            cmd = [
+                'ffprobe', '-v', 'error', '-show_entries',
+                'format=duration:stream=width,height', '-of',
+                'json', file_path
+            ]
+            process = Popen(cmd, stdout=PIPE, stderr=PIPE)
+            stdout, stderr = process.communicate()
             
-            file_path, success = self.download_file(download_link, file_name)
+            if process.returncode == 0:
+                info = json.loads(stdout)
+                duration = int(float(info['format']['duration']))
+                width = info['streams'][0]['width']
+                height = info['streams'][0]['height']
+                
+                attributes = [
+                    DocumentAttributeVideo(
+                        duration=duration,
+                        w=width,
+                        h=height,
+                        round_message=False,
+                        supports_streaming=True
+                    )
+                ]
+        
+        # Generate thumbnail if not provided
+        if thumb_path is None and file_path.lower().endswith(('.mp4', '.mkv', '.mov', '.avi')):
+            thumb_path = f"/tmp/{os.path.basename(file_path)}.jpg"
+            cmd = [
+                'ffmpeg', '-i', file_path, '-ss', '00:00:01', '-vframes', '1',
+                '-q:v', '2', thumb_path
+            ]
+            process = Popen(cmd, stdout=PIPE, stderr=PIPE)
+            process.wait()
+            if not os.path.exists(thumb_path):
+                thumb_path = None
+        
+        await client.send_file(
+            chat_id,
+            file_path,
+            thumb=thumb_path,
+            attributes=attributes,
+            progress_callback=progress_callback,
+            caption=f"Uploaded by Terabox Bot"
+        )
+        
+        return True
+    except Exception as e:
+        logger.error(f"Upload error: {e}")
+        return False
+    finally:
+        if thumb_path and os.path.exists(thumb_path):
+            os.remove(thumb_path)
+
+@bot.on(events.NewMessage(pattern=r'https?://[^\s]+terabox[^\s]+'))
+async def handle_terabox_link(event):
+    url = event.text.strip()
+    message = await event.reply("Processing your Terabox link...")
+    
+    try:
+        # Fetch terabox data from API
+        data = await fetch_terabox_data(url)
+        if not data:
+            await message.edit("Failed to fetch Terabox data. Please check the link and try again.")
+            return
+        
+        file_name = data.get('name', 'terabox_file')
+        download_url = data.get('download_link')
+        thumbnail_url = data.get('thumbnail')
+        
+        if not download_url:
+            await message.edit("No download link found in the response.")
+            return
+        
+        # Download thumbnail if available
+        thumb_path = None
+        if thumbnail_url:
+            thumb_path = f"/tmp/thumb_{os.path.basename(file_name)}.jpg"
+            success = await download_with_progress(thumbnail_url, thumb_path, message, "Downloading Thumbnail")
             if not success:
-                loop.run_until_complete(
-                    self.edit_message(msg, f"❌ Download failed for {file_name}")
-                )
-                return
+                thumb_path = None
+        
+        # Download main file
+        file_path = f"/tmp/{file_name}"
+        await message.edit("Starting download...")
+        success = await download_with_progress(download_url, file_path, message)
+        
+        if not success:
+            await message.edit("Failed to download the file.")
+            return
+        
+        # Check file size
+        file_size = os.path.getsize(file_path)
+        if file_size > MAX_FILE_SIZE:
+            await message.edit(f"File is too large ({file_size / (1024 * 1024):.2f}MB). Max allowed size is {MAX_FILE_SIZE / (1024 * 1024):.2f}MB.")
+            os.remove(file_path)
+            return
+        
+        # Upload to Telegram
+        await message.edit("Starting upload...")
+        success = await upload_with_progress(bot, file_path, message, event.chat_id, thumb_path)
+        
+        if success:
+            await message.edit("File successfully uploaded!")
+        else:
+            await message.edit("Failed to upload the file.")
+        
+    except Exception as e:
+        logger.error(f"Error processing Terabox link: {e}")
+        await message.edit(f"An error occurred: {str(e)}")
+    finally:
+        # Clean up
+        if 'file_path' in locals() and os.path.exists(file_path):
+            os.remove(file_path)
+        if 'thumb_path' in locals() and thumb_path and os.path.exists(thumb_path):
+            os.remove(thumb_path)
 
-            loop.run_until_complete(
-                self.send_video(message, file_path, file_name)
-            )
-            
-        except Exception as e:
-            logger.error(f'Download error: {str(e)}')
-            loop.run_until_complete(
-                self.edit_message(msg, f"❌ Download error: {str(e)}")
-            )
-        finally:
-            loop.close()
+async def health_check(request):
+    return web.Response(text="Bot is running")
 
-    def download_file(self, url: str, file_name: str) -> tuple:
-        try:
-            from aria2p import API
-            aria2 = API(port=6800)
-            download = aria2.add(url, dir=str(self.download_dir))
-            
-            while not download.is_complete:
-                if download.status == "error":
-                    return None, False
-                time.sleep(1)
-            
-            return str(self.download_dir / file_name), True
-            
-        except Exception as e:
-            logger.error(f"Aria2p error: {str(e)}")
-            return None, False
+async def start_server():
+    app = web.Application()
+    app.router.add_get('/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    logger.info(f"Server started on port {PORT}")
 
-    async def send_video(self, message: Message, file_path: str, file_name: str) -> None:
-        status_msg = await message.reply_text(
-            f"📤 Uploading: {file_name}\n"
-            "⏳ Please wait..."
-        )
+async def main():
+    await asyncio.gather(
+        bot.start(),
+        start_server()
+    )
+    await bot.run_until_disconnected()
 
-        try:
-            path = Path(file_path)
-            if not path.exists():
-                await self.edit_message(status_msg, f"❌ Upload failed: File not found at path: {file_path}")
-                return
-
-            me = await self.bot.get_me()
-            await message.reply_video(
-                video=str(path),
-                caption=f"✅ {file_name}\n\nPowered by @{me.username}",
-                supports_streaming=True,
-                progress=self.upload_progress,
-                progress_args=(status_msg, file_name)
-            )
-            await status_msg.delete()
-
-        except FilePartMissing as e:
-            await self.edit_message(status_msg, f"❌ Upload failed: {str(e)}")
-        except Exception as e:
-            await self.edit_message(status_msg, f"❌ Upload error: {str(e)}")
-        finally:
-            try:
-                path = Path(file_path)
-                if path.exists():
-                    path.unlink()
-            except Exception as e:
-                logger.error(f"File cleanup failed: {str(e)}")
-
-    async def upload_progress(self, current: int, total: int, msg: Message, file_name: str) -> None:
-        percent = current * 100 / total
-        progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
-        status = (
-            f"📤 Uploading: {file_name}\n"
-            f"{progress_bar}\n"
-            f"📊 {self.human_size(current)} / {self.human_size(total)}"
-            f" ({percent:.1f}%)"
-        )
-        try:
-            if msg.text != status:
-                await msg.edit_text(status)
-        except Exception:
-            pass
-
-    async def edit_message(self, msg: Message, text: str) -> None:
-        try:
-            if msg.text != text:
-                await msg.edit_text(text)
-        except FloodWait as fw:
-            await asyncio.sleep(fw.value)
-            await msg.edit_text(text)
-        except Exception as e:
-            if "MESSAGE_NOT_MODIFIED" not in str(e):
-                logger.error(f"Message edit failed: {str(e)}")
-
-    @staticmethod
-    def human_size(size: int) -> str:
-        units = ['B', 'KB', 'MB', 'GB', 'TB']
-        index = 0
-        while size >= 1024 and index < len(units) - 1:
-            size /= 1024
-            index += 1
-        return f"{size:.2f} {units[index]}"
-
-    @staticmethod
-    def parse_size(size_str: str) -> int:
-        units = {'B': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3, 'TB': 1024**4}
-        num = float(''.join(filter(str.isdigit, size_str)))
-        unit = ''.join(filter(str.isalpha, size_str.upper())))
-        return int(num * units.get(unit, 1))
+if __name__ == '__main__':
+    asyncio.run(main())
