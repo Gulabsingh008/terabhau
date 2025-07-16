@@ -56,19 +56,22 @@ def parse_size(size_str):
     size, unit = re.match(r'([\d.]+)\s*([A-Za-z]+)', size_str).groups()
     return float(size) * units[unit.upper()]
 
-async def download_with_aria2p(url, filename):
+def download_with_aria2p(url, filename):
     try:
         options = {
-        "dir": DOWNLOAD_DIR,
-        "out": filename
-    }
-
+            "max-connection-per-server": "16",  # Safe range (1-16)
+            "split": "16",
+            "min-split-size": "2M",
+            "dir": DOWNLOAD_DIR,
+            "out": filename,
+            "file-allocation": "falloc"
+        }
         downloads = aria2.add_uris([url], options=options)
-        download = downloads[0]  # Fix: aria2p returns list
+        download = downloads[0]
 
         while not download.is_complete and not download.has_failed:
-            await asyncio.sleep(1)
-            download.update()  # Very important to update status
+            time.sleep(1)
+            download.update()
 
         file_path = os.path.join(DOWNLOAD_DIR, filename)
         return file_path, download.is_complete
@@ -185,8 +188,13 @@ async def async_edit_msg(msg: Message, text: str):
     try:
         if msg.text != text:
             await msg.edit_text(text)
+    except FloodWait as fw:
+        await asyncio.sleep(fw.value)
+        await msg.edit_text(text)
     except Exception as e:
-        logger.error(f"Message edit failed: {str(e)}")
+        if "MESSAGE_NOT_MODIFIED" not in str(e):
+            logger.error(f"Message edit failed: {str(e)}")
+
 
 async def send_video(message: Message, file_path: str, file_name: str):
     msg = await message.reply_text(
