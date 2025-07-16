@@ -1,28 +1,27 @@
 FROM python:3.9-slim
 
-# System dependencies install karein
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     aria2 \
     ffmpeg \
-    iproute2 \
-    procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Working directory set karein
+# Set working directory
 WORKDIR /app
 
-# Requirements copy karein aur install karein
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# App code copy karein
+# Copy application code
 COPY . .
 
-# Required directories create karein
-RUN mkdir -p downloads temp
+# Create required directories
+RUN mkdir -p downloads temp && \
+    chmod -R 777 downloads temp
 
-# Port expose karein
-EXPOSE 8080
+# Expose ports
+EXPOSE 8080 6800
 
 # Start command
 CMD ["bash", "start.sh"]
