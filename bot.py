@@ -5,14 +5,14 @@ import requests
 import logging
 import threading
 import asyncio
-import time
-import aria2p  # For high-speed downloads
-import ffmpeg  # For streaming
+import aria2p
+import ffmpeg
 from flask import Flask, Response, jsonify
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FilePartMissing, FloodWait
 from urllib.parse import unquote
+import time
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -25,7 +25,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Telegram bot configuration
+# Telegram bot config
 API_ID = os.environ.get('API_ID', '26494161')
 API_HASH = os.environ.get('API_HASH', '55da841f877d16a3a806169f3c5153d3')
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '7758524025:AAEVf_OePVQ-6hhM1GfvRlqX3QZIqDOivtw')
@@ -66,7 +66,7 @@ def download_with_aria2p(url, filename):
             "out": filename,
             "file-allocation": "falloc"
         }
-        download = aria2.add_uris([url], options=options)
+        download = aria2.add_uris([url], options=options)[0]
 
         while not download.is_complete and not download.has_failed:
             time.sleep(1)
@@ -150,13 +150,13 @@ async def handle_links(client: Client, message: Message):
         def download_task(msg_obj, message_obj, download_link, file_name):
             async def async_download_and_send():
                 file_path, success = download_with_aria2p(download_link, file_name)
-                
+
                 if not success:
                     await async_edit_msg(msg_obj, f"❌ Download failed for {file_name}")
                     return
-                
+
                 await send_video(message_obj, file_path, file_name)
-        
+
             try:
                 asyncio.run_coroutine_threadsafe(
                     async_download_and_send(),
@@ -169,16 +169,16 @@ async def handle_links(client: Client, message: Message):
                     bot.loop
                 ).result()
 
-        # ✅ FIXED: Properly indented outside try block
         threading.Thread(
             target=download_task,
             args=(msg, message, download_link, file_name)
         ).start()
 
     except Exception as e:
-        await async_edit_msg(msg, f"❌ Error processing video: {str(e)}")
-        return
+        logger.error(f'Processing error: {str(e)}')
+        await async_edit_msg(msg, f"❌ Error: {str(e)}")
 
+# ✅ Fixed Indentation
 async def async_edit_msg(msg: Message, text: str):
     try:
         if msg.text != text:
