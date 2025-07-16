@@ -27,6 +27,28 @@ MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB
 # Initialize Telegram client
 bot = TelegramClient('terabox_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
+# Start command handler
+@bot.on(events.NewMessage(pattern='/start'))
+async def start_handler(event):
+    welcome_message = """
+🚀 **Welcome to Terabox Downloader Bot** 🚀
+
+Send me any Terabox link and I'll download and upload the file for you!
+
+🔹 **Features:**
+- Fast downloads using aria2c
+- Progress tracking for both download and upload
+- Thumbnail support
+- Video streaming support
+
+📌 **Note:** 
+- Maximum file size: 2GB
+- Only Terabox links are supported
+
+Enjoy using the bot! 😊
+"""
+    await event.reply(welcome_message, parse_mode='md')
+
 async def fetch_terabox_data(url):
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{API_ENDPOINT}{url}") as resp:
