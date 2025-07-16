@@ -59,13 +59,10 @@ def parse_size(size_str):
 async def download_with_aria2p(url, filename):
     try:
         options = {
-            "max-connection-per-server": "32",
-            "split": "32",
-            "min-split-size": "2M",
-            "dir": DOWNLOAD_DIR,
-            "out": filename,
-            "file-allocation": "falloc"
-        }
+        "dir": DOWNLOAD_DIR,
+        "out": filename
+    }
+
         downloads = aria2.add_uris([url], options=options)
         download = downloads[0]  # Fix: aria2p returns list
 
