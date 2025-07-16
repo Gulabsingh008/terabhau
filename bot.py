@@ -4,12 +4,13 @@ import json
 import requests
 import logging
 import threading
-import subprocess
 import asyncio
+import aria2p  # For high-speed downloads
+import ffmpeg  # For streaming
 from flask import Flask, Response, jsonify
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from pyrogram.errors import FilePartMissing
+from pyrogram.errors import FilePartMissing, FloodWait
 from urllib.parse import unquote
 
 # Initialize Flask app
@@ -43,33 +44,45 @@ bot = Client(
     workers=8  # Increased for concurrency
 )
 
+# Initialize aria2p (connects to aria2c daemon started in start.sh)
+aria2 = aria2p.API(
+    aria2p.Client(
+        host="http://localhost",
+        port=6800
+    )
+)
+
 def parse_size(size_str):
     """Convert size string (like '171.07 MB') to bytes"""
     units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
     size, unit = re.match(r'([\d.]+)\s*([A-Za-z]+)', size_str).groups()
     return float(size) * units[unit.upper()]
 
-def download_with_aria(url, filename):
-    """Download file using aria2c with multiple connections"""
-    cmd = [
-        'aria2c',
-        '-x', '32',  # Use 32 connections for faster download
-        '-s', '32',
-        '-d', DOWNLOAD_DIR,
-        '-o', filename,
-        '--file-allocation=none',
-        '--summary-interval=0',
-        '--console-log-level=warn',
-        url
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    return os.path.join(DOWNLOAD_DIR, filename), result.returncode == 0
+async def download_with_aria2p(url, filename):
+    """Download file using aria2p with high-speed settings"""
+    try:
+        options = {
+            "max-connection-per-server": "32",
+            "split": "32",
+            "min-split-size": "2M",
+            "dir": DOWNLOAD_DIR,
+            "out": filename,
+            "file-allocation": "falloc"
+        }
+        download = aria2.add_uri([url], options=options)
+        while not download.is_complete and not download.has_failed:
+            await asyncio.sleep(1)
+        file_path = os.path.join(DOWNLOAD_DIR, filename)
+        return file_path, download.is_complete
+    except Exception as e:
+        logger.error(f"Download error: {str(e)}")
+        return None, False
 
 def get_zozo_data(url):
     """Fetch video metadata from Zozo API"""
     try:
         api_url = f'https://zozo-api.onrender.com/download?url={url}'
-        response = requests.get(api_url, timeout=10)
+        response = requests.get(api_url, timeout=30)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -87,21 +100,16 @@ def home():
 
 @app.route('/stream/<path:url>')
 def stream_video(url):
-    """Video streaming endpoint using ffmpeg"""
+    """Video streaming endpoint using ffmpeg-python"""
     url = unquote(url)
     try:
-        cmd = [
-            'ffmpeg',
-            '-i', url,
-            '-f', 'mp4',
-            '-movflags', 'frag_keyframe+empty_moov',
-            '-'
-        ]
-        return Response(
-            subprocess.Popen(cmd, stdout=subprocess.PIPE).stdout,
-            mimetype='video/mp4',
-            direct_passthrough=True
+        process = (
+            ffmpeg
+            .input(url)
+            .output('pipe:', format='mp4', movflags='frag_keyframe+empty_moov')
+            .run_async(pipe_stdout=True)
         )
+        return Response(process.stdout, mimetype='video/mp4')
     except Exception as e:
         logger.error(f'Stream error: {str(e)}')
         return jsonify({'error': 'Stream failed'}), 500
@@ -115,7 +123,7 @@ async def start_command(client: Client, message: Message):
         "Features:\n"
         "- Supports videos up to 2GB\n"
         "- Fast downloads using multi-connection\n"
-        "- Di option\n\n"
+        "- Direct streaming option\n\n"
         "Created by Zozo ️"
     )
     await message.reply_text(help_text)
@@ -125,19 +133,18 @@ async def handle_links(client: Client, message: Message):
     """Process Terabox links"""
     url = message.text.strip()
     msg = await message.reply_text(" Fetching video info from Zozo API...")
-    
-    # Get video metadata
+
     data = get_zozo_data(url)
     if not data:
         await msg.edit_text("❌ Failed to fetch video info. Please try again later.")
         return
-    
+
     try:
         file_name = data['name']
         size_bytes = parse_size(data['size'])
         download_link = data['download_link']
-        
-        # Check file size
+        stream_link = data['stream_link']
+
         MAX_SIZE = 2 * 1024**3  # 2GB
         if size_bytes > MAX_SIZE:
             await msg.edit_text(
@@ -145,55 +152,70 @@ async def handle_links(client: Client, message: Message):
                 f"Max supported size is 2GB."
             )
             return
-        
-        # Prepare download
+
         await msg.edit_text(
-            f"📥 Downloading: {file_name}\n"
-            f"📏 Size: {data['size']}\n"
-            "⏳ This may take a while for large files..."
+            f" Downloading: {file_name}\n"
+            f" Size: {data['size']}\n"
+            f"⏳ This may take a while for large files..."
         )
-        
-        # Download file in background thread
-        def download_task():
+
+        # ✅ Replaced download_task and thread start here:
+        def download_task(msg_obj, message_obj, download_link, file_name):
             try:
-                file_path, success = download_with_aria(download_link, file_name)
-                if not success:
-                    bot.loop.create_task(
-                        msg.edit_text(f"❌ Download failed for {file_name}")
-                    )
-                    return
-                
-                # Send video to user
-                bot.loop.create_task(
-                    send_video(message, file_path, file_name)
+                future = asyncio.run_coroutine_threadsafe(
+                    download_with_aria2p(download_link, file_name),
+                    bot.loop
                 )
+                file_path, success = future.result()
+
+                if not success:
+                    asyncio.run_coroutine_threadsafe(
+                        async_edit_msg(msg_obj, f"❌ Download failed for {file_name}"),
+                        bot.loop
+                    ).result()
+                    return
+
+                asyncio.run_coroutine_threadsafe(
+                    send_video(message_obj, file_path, file_name),
+                    bot.loop
+                ).result()
+
             except Exception as e:
                 logger.error(f'Download error: {str(e)}')
-                bot.loop.create_task(
-                    msg.edit_text(f"❌ Download error: {str(e)}")
-                )
-        
-        threading.Thread(target=download_task).start()
-        
+                asyncio.run_coroutine_threadsafe(
+                    async_edit_msg(msg_obj, f"❌ Download error: {str(e)}"),
+                    bot.loop
+                ).result()
+
+        threading.Thread(
+            target=download_task,
+            args=(msg, message, download_link, file_name)
+        ).start()
+
     except Exception as e:
         logger.error(f'Processing error: {str(e)}')
         await msg.edit_text(f"❌ Error: {str(e)}")
 
+async def async_edit_msg(msg: Message, text: str):
+    """Async wrapper for editing message"""
+    await msg.edit_text(text)
+
 async def send_video(message: Message, file_path: str, file_name: str):
     """Send video to user with progress updates"""
     msg = await message.reply_text(
-        f"📤 Uploading: {file_name}\n"
+        f" Uploading: {file_name}\n"
         "⏳ Please wait..."
     )
-    
+
     try:
-        # Send video with progress
         await message.reply_video(
             video=file_path,
             caption=f"✅ {file_name}\n\nPowered by @{bot.me.username}",
             supports_streaming=True,
             progress=progress_callback,
-            progress_args=(msg, file_name)
+            progress_args=(msg, file_name),
+            chunk_size=2 * 1024 * 1024,
+            workers=8
         )
         await msg.delete()
     except FilePartMissing as e:
@@ -201,7 +223,6 @@ async def send_video(message: Message, file_path: str, file_name: str):
     except Exception as e:
         await msg.edit_text(f"❌ Upload error: {str(e)}")
     finally:
-        # Cleanup downloaded file
         try:
             os.remove(file_path)
         except:
@@ -211,13 +232,15 @@ async def progress_callback(current, total, msg: Message, file_name: str):
     """Update progress message during upload"""
     percent = current * 100 / total
     progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
+    new_text = (
+        f" Uploading: {file_name}\n"
+        f"{progress_bar}\n"
+        f" {human_readable_size(current)} / {human_readable_size(total)}"
+        f" ({percent:.1f}%)"
+    )
     try:
-        await msg.edit_text(
-            f"📤 Uploading: {file_name}\n"
-            f"{progress_bar}\n"
-            f"{human_readable_size(current)} / {human_readable_size(total)}"
-            f" ({percent:.1f}%)"
-        )
+        if msg.text != new_text:
+            await msg.edit_text(new_text)
     except:
         pass
 
@@ -235,10 +258,8 @@ def run_flask():
     app.run(host='0.0.0.0', port=PORT, threaded=True)
 
 if __name__ == '__main__':
-    # Start Flask server in background thread
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    
-    # Start Telegram bot
+
     logger.info("Starting Telegram bot...")
     bot.run()
