@@ -6,7 +6,7 @@ services:
     container_name: telegram-file-bot
     restart: unless-stopped
     environment:
-      - TELEGRAM_TOKEN=your_bot_token
+      - TELEGRAM_TOKEN=7758524025:AAEVf_OePVQ-6hhM1GfvRlqX3QZIqDOivtw
     ports:
       - "8080:8080"
       - "6800:6800"
