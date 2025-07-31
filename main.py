@@ -6,6 +6,7 @@ import logging
 import threading
 import subprocess
 import time
+import asyncio
 from flask import Flask, Response, jsonify
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Telegram bot configuration
 API_ID = os.environ.get('API_ID', '26494161')
 API_HASH = os.environ.get('API_HASH', '55da841f877d16a3a806169f3c5153d3')
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '7758524025:AAEVf_OePVQ-6hhM1GfvRlqX3QZIqDOivtw')
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '8191032269:AAEM4nJdIpPCPx3LODpb9wo9RK2MD5VCicY')
 DOWNLOAD_DIR = 'downloads'
 TEMP_DIR = 'temp'
 MAX_SIZE = 2 * 1024**3  # 2GB limit
@@ -47,23 +48,51 @@ bot = Client(
 # Initialize user_data globally to avoid AttributeError
 bot.user_data = {}
 
-def download_with_aria(url, filename):
-    """Download file using aria2c with multiple connections"""
-    cmd = [
-        'aria2c',
-        '-x', '16',  # Use 16 connections
-        '-s', '16',
-        '-d', DOWNLOAD_DIR,
-        '-o', filename,
-        '--file-allocation=none',
-        '--summary-interval=0',
-        '--console-log-level=warn',
-        url
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+def download_with_aria(url, filename, progress_callback=None):
+    """Download file using aria2c with multiple connections and progress"""
     file_path = os.path.join(DOWNLOAD_DIR, filename)
-    success = result.returncode == 0 and os.path.exists(file_path)
-    return file_path, success
+    cmd = [
+    'aria2c',
+    '-x', '10',
+    '-s', '10',
+    '--min-split-size=10M',
+    '--enable-http-pipelining=true',
+    '--file-allocation=none',
+    '--summary-interval=0',
+    '--console-log-level=warn',
+    '-d', DOWNLOAD_DIR,
+    '-o', filename,
+    url
+]
+
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return process, file_path
+
+def monitor_download_progress(process, file_path, total_size, msg, file_name, start_time, is_download=True):
+    """Monitor download progress by checking file size"""
+    current = 0
+    while process.poll() is None:
+        try:
+            if os.path.exists(file_path):
+                current = os.path.getsize(file_path)
+            percent = current * 100 / total_size if total_size > 0 else 0
+            progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
+            speed = current / (time.time() - start_time) if time.time() - start_time > 0 else 0
+            eta = (total_size - current) / speed if speed > 0 else 0
+            
+            status_text = "Downloading" if is_download else "Uploading"
+            bot.loop.create_task(msg.edit_text(
+                f" {status_text}: {file_name}\n"
+                f"{progress_bar}\n"
+                f" {human_readable_size(current)} / {human_readable_size(total_size)}"
+                f" ({percent:.1f}%)\n"
+                f" Speed: {human_readable_size(speed)}/s | ETA: {int(eta)}s"
+            ))
+            time.sleep(5)  # Check every 5 seconds
+        except Exception as e:
+            logger.error(f"Progress monitor error: {str(e)}")
+    # Final check after process ends
+    return process.returncode == 0 and os.path.exists(file_path) and os.path.getsize(file_path) >= total_size
 
 def get_zozo_data(url):
     """Fetch video metadata from your new API"""
@@ -209,30 +238,46 @@ async def handle_callback(client: Client, query):
         )
 
 def download_task(message: Message, data: dict):
-    """Background download task with fallback"""
+    """Background download task with fallback and progress"""
     msg = data['msg']
     file_name = data['file_name']
     primary_link = data['primary_link']
     fallback_link = data['fallback_link']
+    total_size = data['size_bytes']
     
     try:
+        start_time = time.time()
         # Try primary link
-        file_path, success = download_with_aria(primary_link, file_name)
+        process, file_path = download_with_aria(primary_link, file_name)
+        # Start monitoring progress in a separate thread
+        monitor_thread = threading.Thread(target=monitor_download_progress, args=(process, file_path, total_size, msg, file_name, start_time, True))
+        monitor_thread.start()
+        
+        process.wait()
+        monitor_thread.join()
+        success = process.returncode == 0 and os.path.exists(file_path)
+        
         if not success:
             logger.info("Primary download failed, trying fallback...")
-            file_path, success = download_with_aria(fallback_link, file_name)
+            start_time = time.time()
+            process, file_path = download_with_aria(fallback_link, file_name)
+            monitor_thread = threading.Thread(target=monitor_download_progress, args=(process, file_path, total_size, msg, file_name, start_time, True))
+            monitor_thread.start()
+            process.wait()
+            monitor_thread.join()
+            success = process.returncode == 0 and os.path.exists(file_path)
         
         if not success:
             bot.loop.create_task(msg.edit_text(f"❌ Download failed for {file_name} (both links tried)."))
             return
         
-        # Send video
-        bot.loop.create_task(send_video(message, file_path, file_name))
+        # Send video with upload progress
+        bot.loop.create_task(send_video(message, file_path, file_name, total_size))
     except Exception as e:
         logger.error(f'Download error: {str(e)}')
         bot.loop.create_task(msg.edit_text(f"❌ Download error: {str(e)}"))
 
-async def send_video(message: Message, file_path: str, file_name: str):
+async def send_video(message: Message, file_path: str, file_name: str, total_size: int):
     """Send video to user with progress updates"""
     msg = await message.reply_text(
         f" Uploading: {file_name}\n"
@@ -246,7 +291,7 @@ async def send_video(message: Message, file_path: str, file_name: str):
             caption=f"✅ {file_name}\n\nPowered by @{bot.me.username}",
             supports_streaming=True,
             progress=progress_callback,
-            progress_args=(msg, file_name, start_time)
+            progress_args=(msg, file_name, start_time, total_size)
         )
         await msg.delete()
     except FilePartMissing as e:
@@ -260,9 +305,10 @@ async def send_video(message: Message, file_path: str, file_name: str):
         except:
             pass
 
-async def progress_callback(current, total, msg: Message, file_name: str, start_time):
-    """Update progress message during upload with ETA"""
+async def progress_callback(current, total, msg: Message, file_name: str, start_time, actual_total):
+    """Update progress message during upload with ETA (for upload only)"""
     try:
+        total = actual_total  # Use the known total size
         percent = current * 100 / total
         progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
         speed = current / (time.time() - start_time) if time.time() - start_time > 0 else 0
