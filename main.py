@@ -49,55 +49,53 @@ bot = Client(
 bot.user_data = {}
 
 def download_with_aria(url, filename, progress_callback=None):
-    """Download file using aria2c with multiple connections and progress"""
     file_path = os.path.join(DOWNLOAD_DIR, filename)
     cmd = [
-    'aria2c',
-    '-x', '10',
-    '-s', '10',
-    '--min-split-size=10M',
-    '--enable-http-pipelining=true',
-    '--file-allocation=none',
-    '--summary-interval=0',
-    '--console-log-level=warn',
-    '-d', DOWNLOAD_DIR,
-    '-o', filename,
-    url
-]
-
+        'aria2c',
+        '-x', '16',
+        '-s', '16',
+        '--min-split-size=3M',
+        '--enable-http-pipelining=true',
+        '--file-allocation=none',
+        '--summary-interval=0',
+        '--console-log-level=warn',
+        '-d', DOWNLOAD_DIR,
+        '-o', filename,
+        url
+    ]
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    process.start_time = time.time()
     return process, file_path
 
 def monitor_download_progress(process, file_path, total_size, msg, file_name, start_time, is_download=True):
-    """Monitor download progress by checking file size"""
     current = 0
+    last_percent = -1
     while process.poll() is None:
         try:
             if os.path.exists(file_path):
                 current = os.path.getsize(file_path)
             percent = current * 100 / total_size if total_size > 0 else 0
-            progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
-            speed = current / (time.time() - start_time) if time.time() - start_time > 0 else 0
-            eta = (total_size - current) / speed if speed > 0 else 0
-            
-            status_text = "Downloading" if is_download else "Uploading"
-            bot.loop.create_task(msg.edit_text(
-                f" {status_text}: {file_name}\n"
-                f"{progress_bar}\n"
-                f" {human_readable_size(current)} / {human_readable_size(total_size)}"
-                f" ({percent:.1f}%)\n"
-                f" Speed: {human_readable_size(speed)}/s | ETA: {int(eta)}s"
-            ))
-            time.sleep(5)  # Check every 5 seconds
+            if abs(percent - last_percent) >= 2:
+                last_percent = percent
+                progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
+                speed = current / (time.time() - start_time) if time.time() - start_time > 0 else 0
+                eta = (total_size - current) / speed if speed > 0 else 0
+                status_text = "Downloading" if is_download else "Uploading"
+                bot.loop.create_task(msg.edit_text(
+                    f" {status_text}: {file_name}\n"
+                    f"{progress_bar}\n"
+                    f" {human_readable_size(current)} / {human_readable_size(total_size)}"
+                    f" ({percent:.1f}%)\n"
+                    f" Speed: {human_readable_size(speed)}/s | ETA: {int(eta)}s"
+                ))
+            time.sleep(10)
         except Exception as e:
             logger.error(f"Progress monitor error: {str(e)}")
-    # Final check after process ends
     return process.returncode == 0 and os.path.exists(file_path) and os.path.getsize(file_path) >= total_size
 
 def get_zozo_data(url):
-    """Fetch video metadata from your new API"""
     try:
-        api_url = f'https://open-dragonfly-vonex-c2746ec1.koyeb.app/download?url={url}'  # Replace with your actual API URL
+        api_url = f'https://open-dragonfly-vonex-c2746ec1.koyeb.app/download?url={url}'
         response = requests.get(api_url, timeout=10)
         response.raise_for_status()
         data = response.json()
@@ -110,7 +108,6 @@ def get_zozo_data(url):
 
 @app.route('/')
 def home():
-    """Health check endpoint"""
     return jsonify({
         'status': 'active',
         'service': 'Terabox Telegram Bot',
@@ -119,7 +116,6 @@ def home():
 
 @app.route('/stream/<path:url>')
 def stream_video(url):
-    """Video streaming endpoint using ffmpeg"""
     url = unquote(url)
     try:
         cmd = [
@@ -140,7 +136,6 @@ def stream_video(url):
 
 @bot.on_message(filters.command(['start', 'help']))
 async def start_command(client: Client, message: Message):
-    """Handle /start and /help commands"""
     help_text = (
         " **Terabox Video Downloader Bot** \n\n"
         "Send me a Terabox share link and I'll download or stream the video for you!\n\n"
@@ -155,16 +150,12 @@ async def start_command(client: Client, message: Message):
 
 @bot.on_message(filters.regex(r'https?://[^\s]+'))
 async def handle_links(client: Client, message: Message):
-    """Process Terabox links"""
     url = message.text.strip()
     msg = await message.reply_text(" Fetching video info from API...")
-    
-    # Get video metadata
     data = get_zozo_data(url)
     if not data:
         await msg.edit_text("❌ Failed to fetch video info. Please try again later.")
         return
-    
     try:
         file_name = data['file_name']
         size_bytes = data['size_bytes']
@@ -172,29 +163,19 @@ async def handle_links(client: Client, message: Message):
         primary_link = data['download_link']
         fallback_link = data['link']
         stream_link = data['streaming_url']
-        
-        # Check file size
         if size_bytes > MAX_SIZE:
             await msg.edit_text(
-                f"❌ File too large ({file_size_str}). "
-                f"Max supported size is 2GB."
+                f"❌ File too large ({file_size_str}). Max supported size is 2GB."
             )
             return
-        
-        # Provide options: Download or Stream
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("Download", callback_data=f"download_{message.id}"),
             InlineKeyboardButton("Stream", callback_data=f"stream_{message.id}")
         ]])
-        
         await msg.edit_text(
-            f" File: {file_name}\n"
-            f" Size: {file_size_str}\n"
-            f"Choose an option:",
+            f" File: {file_name}\n Size: {file_size_str}\nChoose an option:",
             reply_markup=keyboard
         )
-        
-        # Store data in the global dict
         bot.user_data[message.id] = {
             'file_name': file_name,
             'primary_link': primary_link,
@@ -203,60 +184,45 @@ async def handle_links(client: Client, message: Message):
             'size_bytes': size_bytes,
             'msg': msg
         }
-        
     except Exception as e:
         logger.error(f'Processing error: {str(e)}')
         await msg.edit_text(f"❌ Error: {str(e)}")
 
 @bot.on_callback_query()
 async def handle_callback(client: Client, query):
-    """Handle button callbacks for download/stream"""
     data = query.data
     message_id = int(data.split('_')[1])
     stored_data = bot.user_data.get(message_id)
     if not stored_data:
         await query.answer("Session expired. Please send the link again.")
         return
-    
     msg = stored_data['msg']
     if data.startswith('download_'):
         await query.answer("Starting download...")
         await msg.edit_text(
-            f" Downloading: {stored_data['file_name']}\n"
-            f"⏳ This may take a while for large files..."
+            f" Downloading: {stored_data['file_name']}\n⏳ This may take a while for large files..."
         )
-        
-        # Download in background
         threading.Thread(target=download_task, args=(query.message, stored_data)).start()
-    
     elif data.startswith('stream_'):
         await query.answer("Generating stream link...")
         await msg.edit_text(
-            f" Streaming URL for {stored_data['file_name']}:\n"
-            f"{stored_data['stream_link']}\n\n"
-            "Open in a video player that supports streaming."
+            f" Streaming URL for {stored_data['file_name']}:\n{stored_data['stream_link']}\n\nOpen in a video player that supports streaming."
         )
 
 def download_task(message: Message, data: dict):
-    """Background download task with fallback and progress"""
     msg = data['msg']
     file_name = data['file_name']
     primary_link = data['primary_link']
     fallback_link = data['fallback_link']
     total_size = data['size_bytes']
-    
     try:
         start_time = time.time()
-        # Try primary link
         process, file_path = download_with_aria(primary_link, file_name)
-        # Start monitoring progress in a separate thread
         monitor_thread = threading.Thread(target=monitor_download_progress, args=(process, file_path, total_size, msg, file_name, start_time, True))
         monitor_thread.start()
-        
         process.wait()
         monitor_thread.join()
         success = process.returncode == 0 and os.path.exists(file_path)
-        
         if not success:
             logger.info("Primary download failed, trying fallback...")
             start_time = time.time()
@@ -266,24 +232,16 @@ def download_task(message: Message, data: dict):
             process.wait()
             monitor_thread.join()
             success = process.returncode == 0 and os.path.exists(file_path)
-        
         if not success:
             bot.loop.create_task(msg.edit_text(f"❌ Download failed for {file_name} (both links tried)."))
             return
-        
-        # Send video with upload progress
         bot.loop.create_task(send_video(message, file_path, file_name, total_size))
     except Exception as e:
         logger.error(f'Download error: {str(e)}')
         bot.loop.create_task(msg.edit_text(f"❌ Download error: {str(e)}"))
 
 async def send_video(message: Message, file_path: str, file_name: str, total_size: int):
-    """Send video to user with progress updates"""
-    msg = await message.reply_text(
-        f" Uploading: {file_name}\n"
-        "⏳ Please wait..."
-    )
-    
+    msg = await message.reply_text(f" Uploading: {file_name}\n⏳ Please wait...")
     try:
         start_time = time.time()
         await message.reply_video(
@@ -299,36 +257,36 @@ async def send_video(message: Message, file_path: str, file_name: str, total_siz
     except Exception as e:
         await msg.edit_text(f"❌ Upload error: {str(e)}")
     finally:
-        # Cleanup
         try:
             os.remove(file_path)
         except:
             pass
 
 async def progress_callback(current, total, msg: Message, file_name: str, start_time, actual_total):
-    """Update progress message during upload with ETA (for upload only)"""
     try:
-        total = actual_total  # Use the known total size
+        total = actual_total
         percent = current * 100 / total
-        progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
-        speed = current / (time.time() - start_time) if time.time() - start_time > 0 else 0
-        eta = (total - current) / speed if speed > 0 else 0
-        
-        await msg.edit_text(
-            f" Uploading: {file_name}\n"
-            f"{progress_bar}\n"
-            f" {human_readable_size(current)} / {human_readable_size(total)}"
-            f" ({percent:.1f}%)\n"
-            f" Speed: {human_readable_size(speed)}/s | ETA: {int(eta)}s"
-        )
-        await asyncio.sleep(10)  # Use async sleep to avoid blocking
+        if not hasattr(msg, "last_percent"):
+            msg.last_percent = -1
+        if abs(percent - msg.last_percent) >= 2:
+            msg.last_percent = percent
+            progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
+            speed = current / (time.time() - start_time) if time.time() - start_time > 0 else 0
+            eta = (total - current) / speed if speed > 0 else 0
+            await msg.edit_text(
+                f" Uploading: {file_name}\n"
+                f"{progress_bar}\n"
+                f" {human_readable_size(current)} / {human_readable_size(total)}"
+                f" ({percent:.1f}%)\n"
+                f" Speed: {human_readable_size(speed)}/s | ETA: {int(eta)}s"
+            )
+        await asyncio.sleep(15)
     except FloodWait as e:
         await asyncio.sleep(e.value)
     except Exception:
         pass
 
 def human_readable_size(size):
-    """Convert bytes to human-readable format"""
     if size == 0:
         return "0B"
     units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -339,14 +297,10 @@ def human_readable_size(size):
     return f"{size:.2f} {units[index]}"
 
 def run_flask():
-    """Run Flask server in separate thread"""
     app.run(host='0.0.0.0', port=PORT, threaded=True)
 
 if __name__ == '__main__':
-    # Start Flask server in background thread
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    
-    # Start Telegram bot
     logger.info("Starting Telegram bot...")
     bot.run()
