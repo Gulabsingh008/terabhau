@@ -5,4 +5,6 @@ pyrogram
 tgcrypto
 aiohttp
 fastapi
+Flask
+requests
 uvicorn
