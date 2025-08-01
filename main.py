@@ -7,12 +7,12 @@ import threading
 import subprocess
 import time
 import asyncio
-from speedtest import Speedtest
 from flask import Flask, Response, jsonify
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FilePartMissing, FloodWait
 from urllib.parse import unquote
+from speedtest import Speedtest  # Updated import
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -154,7 +154,7 @@ async def run_speedtest(_, message):
     await message.reply("🔄 Running speedtest, please wait...")
 
     try:
-        st = speedtest.Speedtest()
+        st = Speedtest()  # Updated instantiation
         st.get_best_server()
         download_speed = st.download() / 1024 / 1024  # Mbps
         upload_speed = st.upload() / 1024 / 1024      # Mbps
@@ -171,7 +171,6 @@ async def run_speedtest(_, message):
         
     except Exception as e:
         await message.reply(f"❌ Speedtest failed:\n<code>{e}</code>")
-
 
 @bot.on_message(filters.regex(r'https?://[^\s]+'))
 async def handle_links(client: Client, message: Message):
