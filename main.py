@@ -7,6 +7,7 @@ import threading
 import subprocess
 import time
 import asyncio
+import speedtest
 from flask import Flask, Response, jsonify
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
@@ -147,6 +148,27 @@ async def start_command(client: Client, message: Message):
         "Created by TEAM - Zozo"
     )
     await message.reply_text(help_text)
+
+@bot.on_message(filters.command("speedtest"))
+async def run_speedtest(client: Client, message: Message):
+    msg = await message.reply_text("⏳ Running speed test, please wait...")
+
+    try:
+        st = speedtest.Speedtest()
+        st.get_best_server()
+        download_speed = st.download()
+        upload_speed = st.upload()
+        ping = st.results.ping
+
+        await msg.edit_text(
+            f"**Speedtest Results** 📶\n\n"
+            f"📥 Download: `{human_readable_size(download_speed)}/s`\n"
+            f"📤 Upload: `{human_readable_size(upload_speed)}/s`\n"
+            f"📶 Ping: `{ping:.2f} ms`"
+        )
+    except Exception as e:
+        await msg.edit_text(f"❌ Speedtest failed: {str(e)}")
+
 
 @bot.on_message(filters.regex(r'https?://[^\s]+'))
 async def handle_links(client: Client, message: Message):
