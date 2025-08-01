@@ -149,25 +149,28 @@ async def start_command(client: Client, message: Message):
     )
     await message.reply_text(help_text)
 
-@bot.on_message(filters.command("speedtest"))
-async def run_speedtest(client: Client, message: Message):
-    msg = await message.reply_text("⏳ Running speed test, please wait...")
+@Client.on_message(filters.command("speedtest") & filters.private)
+async def run_speedtest(_, message):
+    await message.reply("🔄 Running speedtest, please wait...")
 
     try:
         st = speedtest.Speedtest()
         st.get_best_server()
-        download_speed = st.download()
-        upload_speed = st.upload()
+        download_speed = st.download() / 1024 / 1024  # Mbps
+        upload_speed = st.upload() / 1024 / 1024      # Mbps
         ping = st.results.ping
 
-        await msg.edit_text(
-            f"**Speedtest Results** 📶\n\n"
-            f"📥 Download: `{human_readable_size(download_speed)}/s`\n"
-            f"📤 Upload: `{human_readable_size(upload_speed)}/s`\n"
-            f"📶 Ping: `{ping:.2f} ms`"
+        result = (
+            f"🏓 <b>SpeedTest Result</b>\n\n"
+            f"📥 Download: <code>{download_speed:.2f} Mbps</code>\n"
+            f"📤 Upload: <code>{upload_speed:.2f} Mbps</code>\n"
+            f"📡 Ping: <code>{ping:.2f} ms</code>"
         )
+
+        await message.reply(result, quote=True)
+        
     except Exception as e:
-        await msg.edit_text(f"❌ Speedtest failed: {str(e)}")
+        await message.reply(f"❌ Speedtest failed:\n<code>{e}</code>")
 
 
 @bot.on_message(filters.regex(r'https?://[^\s]+'))
