@@ -32,34 +32,42 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '8191032269:AAEM4nJdIpPCPx3LODpb9wo9RK2M
 DOWNLOAD_DIR = 'downloads'
 TEMP_DIR = 'temp'
 MAX_SIZE = 2 * 1024**3  # 2GB limit
+MAX_CONCURRENT = 10  # Max concurrent downloads/uploads to handle 200+ users
+MAX_DOWNLOAD_SPEED = '2500K'  # 20 Mbps max (2.5 MB/s)
+UPLOAD_THROTTLE = 0.05  # Small sleep for ~5-10 Mbps upload throttle (adjust for server)
+
+# Semaphore for concurrency control
+semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
 # Create directories if not exists
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Initialize Pyrogram client
+# Initialize Pyrogram client with more workers for concurrency
 bot = Client(
     'terabox_bot',
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=4
+    workers=50  # Increased for handling multiple users
 )
 
-# Initialize user_data globally to avoid AttributeError
+# Initialize user_data globally
 bot.user_data = {}
 
-def download_with_aria(url, filename, progress_callback=None):
+def download_with_aria(url, filename, total_size):
     file_path = os.path.join(DOWNLOAD_DIR, filename)
+    connections = '16' if total_size > 20 * 1024**2 else '4'  # Fewer for small files to avoid speed drop
     cmd = [
         'aria2c',
-        '-x', '16',
-        '-s', '16',
+        '-x', connections,
+        '-s', connections,
         '--min-split-size=3M',
         '--enable-http-pipelining=true',
         '--file-allocation=none',
         '--summary-interval=0',
         '--console-log-level=warn',
+        '--max-download-limit=' + MAX_DOWNLOAD_SPEED,  # Speed limit
         '-d', DOWNLOAD_DIR,
         '-o', filename,
         url
@@ -76,7 +84,7 @@ def monitor_download_progress(process, file_path, total_size, msg, file_name, st
             if os.path.exists(file_path):
                 current = os.path.getsize(file_path)
             percent = current * 100 / total_size if total_size > 0 else 0
-            if abs(percent - last_percent) >= 2:
+            if abs(percent - last_percent) >= 5:  # Update every 5% for efficiency
                 last_percent = percent
                 progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
                 speed = current / (time.time() - start_time) if time.time() - start_time > 0 else 0
@@ -89,7 +97,7 @@ def monitor_download_progress(process, file_path, total_size, msg, file_name, st
                     f" ({percent:.1f}%)\n"
                     f" Speed: {human_readable_size(speed)}/s | ETA: {int(eta)}s"
                 ))
-            time.sleep(10)
+            time.sleep(5)  # Reduced for faster monitoring without overload
         except Exception as e:
             logger.error(f"Progress monitor error: {str(e)}")
     return process.returncode == 0 and os.path.exists(file_path) and os.path.getsize(file_path) >= total_size
@@ -154,7 +162,7 @@ async def run_speedtest(_, message):
     await message.reply("🔄 Running speedtest, please wait...")
 
     try:
-        st = Speedtest()  # Updated instantiation
+        st = Speedtest()
         st.get_best_server()
         download_speed = st.download() / 1024 / 1024  # Mbps
         upload_speed = st.upload() / 1024 / 1024      # Mbps
@@ -226,12 +234,17 @@ async def handle_callback(client: Client, query):
         await msg.edit_text(
             f" Downloading: {stored_data['file_name']}\n⏳ This may take a while for large files..."
         )
-        threading.Thread(target=download_task, args=(query.message, stored_data)).start()
+        # Use semaphore for concurrency
+        asyncio.create_task(async_download_task(query.message, stored_data))
     elif data.startswith('stream_'):
         await query.answer("Generating stream link...")
         await msg.edit_text(
             f" Streaming URL for {stored_data['file_name']}:\n{stored_data['stream_link']}\n\nOpen in a video player that supports streaming."
         )
+
+async def async_download_task(message: Message, data: dict):
+    async with semaphore:  # Limit concurrent downloads
+        await asyncio.to_thread(download_task, message, data)
 
 def download_task(message: Message, data: dict):
     msg = data['msg']
@@ -241,7 +254,7 @@ def download_task(message: Message, data: dict):
     total_size = data['size_bytes']
     try:
         start_time = time.time()
-        process, file_path = download_with_aria(primary_link, file_name)
+        process, file_path = download_with_aria(primary_link, file_name, total_size)
         monitor_thread = threading.Thread(target=monitor_download_progress, args=(process, file_path, total_size, msg, file_name, start_time, True))
         monitor_thread.start()
         process.wait()
@@ -250,7 +263,7 @@ def download_task(message: Message, data: dict):
         if not success:
             logger.info("Primary download failed, trying fallback...")
             start_time = time.time()
-            process, file_path = download_with_aria(fallback_link, file_name)
+            process, file_path = download_with_aria(fallback_link, file_name, total_size)
             monitor_thread = threading.Thread(target=monitor_download_progress, args=(process, file_path, total_size, msg, file_name, start_time, True))
             monitor_thread.start()
             process.wait()
@@ -265,26 +278,27 @@ def download_task(message: Message, data: dict):
         bot.loop.create_task(msg.edit_text(f"❌ Download error: {str(e)}"))
 
 async def send_video(message: Message, file_path: str, file_name: str, total_size: int):
-    msg = await message.reply_text(f" Uploading: {file_name}\n⏳ Please wait...")
-    try:
-        start_time = time.time()
-        await message.reply_video(
-            video=file_path,
-            caption=f"✅ {file_name}\n\nPowered by @{bot.me.username}",
-            supports_streaming=True,
-            progress=progress_callback,
-            progress_args=(msg, file_name, start_time, total_size)
-        )
-        await msg.delete()
-    except FilePartMissing as e:
-        await msg.edit_text(f"❌ Upload failed: {str(e)}")
-    except Exception as e:
-        await msg.edit_text(f"❌ Upload error: {str(e)}")
-    finally:
+    async with semaphore:  # Limit concurrent uploads
+        msg = await message.reply_text(f" Uploading: {file_name}\n⏳ Please wait...")
         try:
-            os.remove(file_path)
-        except:
-            pass
+            start_time = time.time()
+            await message.reply_video(
+                video=file_path,
+                caption=f"✅ {file_name}\n\nPowered by @{bot.me.username}",
+                supports_streaming=True,
+                progress=progress_callback,
+                progress_args=(msg, file_name, start_time, total_size)
+            )
+            await msg.delete()
+        except FilePartMissing as e:
+            await msg.edit_text(f"❌ Upload failed: {str(e)}")
+        except Exception as e:
+            await msg.edit_text(f"❌ Upload error: {str(e)}")
+        finally:
+            try:
+                os.remove(file_path)
+            except:
+                pass
 
 async def progress_callback(current, total, msg: Message, file_name: str, start_time, actual_total):
     try:
@@ -292,7 +306,7 @@ async def progress_callback(current, total, msg: Message, file_name: str, start_
         percent = current * 100 / total
         if not hasattr(msg, "last_percent"):
             msg.last_percent = -1
-        if abs(percent - msg.last_percent) >= 2:
+        if abs(percent - msg.last_percent) >= 5:  # Update every 5% for faster uploads
             msg.last_percent = percent
             progress_bar = "⬢" * int(percent / 5) + "⬡" * (20 - int(percent / 5))
             speed = current / (time.time() - start_time) if time.time() - start_time > 0 else 0
@@ -304,7 +318,7 @@ async def progress_callback(current, total, msg: Message, file_name: str, start_
                 f" ({percent:.1f}%)\n"
                 f" Speed: {human_readable_size(speed)}/s | ETA: {int(eta)}s"
             )
-        await asyncio.sleep(15)
+        await asyncio.sleep(UPLOAD_THROTTLE)  # Throttle to control upload speed (e.g., 5-10 Mbps)
     except FloodWait as e:
         await asyncio.sleep(e.value)
     except Exception:
