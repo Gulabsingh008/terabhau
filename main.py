@@ -149,7 +149,7 @@ async def start_command(client: Client, message: Message):
     )
     await message.reply_text(help_text)
 
-@Client.on_message(filters.command("speedtest") & filters.private)
+@bot.on_message(filters.command("speedtest") & filters.private)
 async def run_speedtest(_, message):
     await message.reply("🔄 Running speedtest, please wait...")
 
