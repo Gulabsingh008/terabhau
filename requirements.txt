@@ -8,5 +8,4 @@ fastapi
 Flask
 requests
 uvicorn
-speedtest
 speedtest-cli
