@@ -7,7 +7,7 @@ import threading
 import subprocess
 import time
 import asyncio
-import speedtest
+from speedtest import Speedtest
 from flask import Flask, Response, jsonify
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
